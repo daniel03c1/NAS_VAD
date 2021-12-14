@@ -224,7 +224,7 @@ class NetworkVAD(nn.Module):
         self.use_second_type_list = []
         if use_second:
             self.reduction_list = list(range(layers))
-            self.use_second_type_list = list(range(3, layers)) # layers//2, layers))
+            self.use_second_type_list = list(range(layers//2, layers))
 
         for i in range(layers):
             reduction = i in self.reduction_list
