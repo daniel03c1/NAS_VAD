@@ -228,12 +228,6 @@ class NetworkVAD(nn.Module):
 
         for i in range(layers):
             reduction = i in self.reduction_list
-            # C_curr *= (1 + reduction) # multiply 2 for reduction phase
-            # C_curr *= 2
-            # C_curr *= int((1 + reduction)**0.5)
-            # C_curr = int(C_curr * ((1 + 0.2*reduction)) / 4) * 4
-            # C_curr = int(C_curr * (1 + 0.414*reduction) / 4) * 4
-            # C_curr = int(C * (2 ** ((i+1)*0.25))/4) * 4
             height = int(height / (1 + reduction*time_average))
             width = int(width / (1 + reduction))
 

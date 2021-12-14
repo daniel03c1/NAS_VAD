@@ -31,25 +31,16 @@ def get_ops(search_space):
                 'skip_connect',
                ], 7
     elif search_space == 'vadA':
-        return [# 'sep_conv_3x3',
-                # 'sep_conv_5x5',
+        return ['sep_conv_3x3',
+                'sep_conv_5x5',
                 'MBConv_3x3_x2',
                 'MBConv_3x3_x4',
-                # 'MBConv_5x5_x2',
-                # 'MBConv_5x5_x4',
+                'MBConv_5x5_x2',
+                'MBConv_5x5_x4',
                 'SE_0.25',
                 'SE_0.5',
-                # 'FFN2D_0.5', # new~
-                # 'FFN2D_1', # new~
-                # 'FFN2D_2', # new~
-                # 'GLU2D_3', # new~
-                # 'GLU2D_5', # new
-                # 'MHA2D_2_TO', # new~
-                # 'MHA2D_2_FO', # new~
-                'MHA2D_4_TO', # new~
-                'MHA2D_4_FO', # new~
                 'skip_connect',
-                'zero'], 2 # 4 # 3 # 3 # 4
+                'zero'], 4
     elif search_space == 'vadB':
         return ['MHA2D_2',
                 'MHA2D_4',
@@ -58,16 +49,14 @@ def get_ops(search_space):
                 'FFN2D_2',
                 'GLU2D_3',
                 'GLU2D_5',
-                # 'sep_conv_3x3', # new~
-                # 'sep_conv_5x5', # new~
-                'MBConv_3x3_x2', # new~
-                'MBConv_3x3_x4', # new~
-                # 'MBConv_5x5_x2', # new~
-                # 'MBConv_5x5_x4', # new~
-                'SE_0.25', # new~
-                'SE_0.5', # new~
+                'sep_conv_3x3',
+                'sep_conv_5x5',
+                'MBConv_3x3_x2',
+                'MBConv_3x3_x4',
+                'MBConv_5x5_x2',
+                'MBConv_5x5_x4',
                 'skip_connect',
-                'zero'], 7 # 4 # 6 # 4
+                'zero'], 4
 
 
 class DARTSObjective(ObjectiveFunction):
