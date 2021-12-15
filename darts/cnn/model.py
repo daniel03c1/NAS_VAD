@@ -73,8 +73,12 @@ class NetworkVADOriginal(nn.Module):
         
         stem_multiplier = 3
         C_curr = stem_multiplier*C
+        # self.stem = nn.Sequential(
+        #     nn.Conv2d(1, C_curr, 3, padding=1, bias=False),
+        #     nn.BatchNorm2d(C_curr)
+        # )
         self.stem = nn.Sequential(
-            nn.Conv2d(1, C_curr, 3, padding=1, bias=False),
+            nn.Conv2d(1, C_curr, 3, stride=(1, 2), padding=1, bias=False),
             nn.BatchNorm2d(C_curr)
         )
         
@@ -108,6 +112,138 @@ class NetworkVADOriginal(nn.Module):
         s1 = torch.transpose(s1, -2, -1) # [batch, time, chan]
 
         logits = self.classifier(s1)
+        logits = self.sigmoid(logits.squeeze(-1))
+        return logits
+
+
+class Cellv1(nn.Module):
+    def __init__(self, genotype, C_prev_prev, C_prev, C,
+                 reduction, reduction_prev, use_second_type=None):
+        super(Cellv1, self).__init__()
+
+        if use_second_type is None:
+            use_second_type = reduction # whether or not to use reduction cell
+
+        if use_second_type:
+            self.preprocess0 = ChannelFixerOriginal(C_prev_prev, C)
+            self.preprocess1 = ChannelFixerOriginal(C_prev, C)
+        else:
+            if reduction_prev:
+                self.preprocess0 = FactorizedReduceOriginal(C_prev_prev, C)
+            else:
+                self.preprocess0 = ReLUConvBN(C_prev_prev, C, 1, 1, 0)
+            self.preprocess1 = ReLUConvBN(C_prev, C, 1, 1, 0)
+
+        if use_second_type:
+            op_names, indices = zip(*genotype.reduce)
+            concat = genotype.reduce_concat
+        else:
+            op_names, indices = zip(*genotype.normal)
+            concat = genotype.normal_concat
+        self._compile(C, op_names, indices, concat, reduction)
+
+    def _compile(self, C, op_names, indices, concat, reduction):
+        assert len(op_names) == len(indices)
+        self._steps = len(op_names) // 2
+        self._concat = concat
+        self.multiplier = len(concat)
+
+        self._ops = nn.ModuleList()
+        for name, index in zip(op_names, indices):
+            # stride = 2 if reduction and index < 2 else 1
+            stride = (1, 2) if reduction and index < 2 else 1
+            op = OPS[name](C, stride, True)
+            self._ops += [op]
+        self._indices = indices
+
+    def forward(self, s0, s1, drop_prob):
+        s0 = self.preprocess0(s0)
+        s1 = self.preprocess1(s1)
+
+        states = [s0, s1]
+        for i in range(self._steps):
+            h1 = states[self._indices[2*i]]
+            h2 = states[self._indices[2*i+1]]
+            op1 = self._ops[2*i]
+            op2 = self._ops[2*i+1]
+            h1 = op1(h1)
+            h2 = op2(h2)
+            if drop_prob > 0. and self.training:
+                if not isinstance(op1, Identity):
+                    h1 = drop_path(h1, drop_prob)
+                if not isinstance(op2, Identity):
+                    h2 = drop_path(h2, drop_prob)
+
+            if h1.dim() != h2.dim():
+                h1 = force_1d(h1)
+                h2 = force_1d(h2)
+            s = h1 + h2
+            states += [s]
+
+        dims = [s.dim() for s in states]
+        if min(dims) == 4:
+            return torch.cat([states[i] for i in self._concat], dim=1)
+        else:
+            return torch.cat([force_1d(states[i]) for i in self._concat],
+                             dim=-1)
+
+
+class NetworkVADv1(nn.Module):
+    def __init__(self, C, layers, genotype, use_second=False,
+                 drop_path_prob=0., time_average=False):
+        super(NetworkVADv1, self).__init__()
+        self._layers = layers
+
+        stem_multiplier = 3
+        C_curr = stem_multiplier*C
+        self.stem = nn.Sequential(
+            nn.Conv2d(1, C_curr, 3, stride=(1, 2), padding=1, bias=False),
+            nn.BatchNorm2d(C_curr)
+        )
+
+        C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+        self.cells = nn.ModuleList()
+        reduction_prev = False
+
+        self.reduction_list = [layers//3, 2*layers//3]
+        self.use_second_type_list = []
+        if use_second:
+            self.reduction_list = []
+            self.use_second_type_list = list(range(1, layers)) # range(layers//3, layers)
+
+        for i in range(layers):
+            reduction = i in self.reduction_list
+            C_curr *= (1 + reduction) # multiply 2 for reduction phase
+
+            # modified (for 1D)
+            if use_second:
+                C_curr *= (1 + 7*(i==self.use_second_type_list[0]))
+
+            cell = Cellv1(genotype, C_prev_prev, C_prev, C_curr,
+                        reduction, reduction_prev,
+                        i in self.use_second_type_list)
+            reduction_prev = reduction
+            self.cells += [cell]
+            C_prev_prev, C_prev = C_prev, cell.multiplier*C_curr
+
+        self.classifier = nn.LazyLinear(1)
+        self.sigmoid = nn.Sigmoid()
+        self.drop_path_prob = drop_path_prob
+        self.time_average = time_average
+
+    def forward(self, inputs):
+        logits_aux = None
+        s0 = s1 = self.stem(inputs) 
+
+        for i, cell in enumerate(self.cells):
+            s0, s1 = s1, cell(s0, s1, self.drop_path_prob)
+
+        s1 = force_1d(s1)
+
+        if getattr(self, 'time_average', False):
+            s1 = torch.mean(s1, dim=-2) # reduce time domain
+
+        logits = self.classifier(s1.squeeze())
         logits = self.sigmoid(logits.squeeze(-1))
         return logits
 
@@ -152,6 +288,7 @@ class Cell(nn.Module):
 
         self._ops = nn.ModuleList()
         for name, index in zip(op_names, indices):
+            stride = 1
             op = OPS[name](C, height, width)
             self._ops += [op]
         self._indices = indices
@@ -191,13 +328,13 @@ class Cell(nn.Module):
             return torch.cat([force_1d(states[i]) for i in self._concat],
                              dim=-1)
 
-
-class NetworkVAD(nn.Module):
+        
+class NetworkVADv2(nn.Module):
     def __init__(self, C, layers, genotype,
                  use_second=False,
                  drop_path_prob=0., time_average=False,
                  height=64, width=64):
-        super(NetworkVAD, self).__init__()
+        super(NetworkVADv2, self).__init__()
         self._layers = layers
 
         stem_multiplier = 1 # 3
@@ -262,6 +399,70 @@ class NetworkVAD(nn.Module):
         logits = self.sigmoid(logits.squeeze(-1))
         return logits
 
+class NetworkVADv3(nn.Module):
+    ''' for Marblenet '''
+    def __init__(self, C, layers, genotype,
+                 use_second=False,
+                 drop_path_prob=0., time_average=False,
+                 height=64, width=64):
+        super(NetworkVADv3, self).__init__()
+        self._layers = layers
+
+        stem_multiplier = 1 # 3
+        C_curr = stem_multiplier*C
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(1, C_curr, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(C_curr),
+            nn.GELU(),
+            nn.Conv2d(C_curr, C_curr, 3, padding=1, bias=False),
+        )
+
+        C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+        height, width = height//2, width//2
+        self.cells = nn.ModuleList()
+        reduction_prev = False
+
+        self.reduction_list = [layers//3, 2*layers//3]
+        self.use_second_type_list = []
+        if use_second:
+            self.reduction_list = list(range(layers))
+            self.use_second_type_list = list(range(layers//2, layers))
+
+        for i in range(layers):
+            reduction = i in self.reduction_list
+            # C_curr *= (1 + reduction) # multiply 2 for reduction phase
+            C_curr *= int((1 + reduction)**0.5)
+            height = int(height / (1 + reduction))
+            width = int(width / (1 + reduction))
+
+            cell = Cell(genotype, C_prev_prev, C_prev, C_curr,
+                        reduction, reduction_prev,
+                        i in self.use_second_type_list,
+                        height, width,
+                        time_average)
+            reduction_prev = reduction
+            self.cells += [cell]
+            C_prev_prev, C_prev = C_prev, cell.multiplier*C_curr
+
+        self.classifier = nn.LazyLinear(1)
+        self.sigmoid = nn.Sigmoid()
+        self.drop_path_prob = drop_path_prob
+        
+        self.time_average = time_average # for Samplewise prediction
+
+    def forward(self, inputs):
+        s0 = s1 = self.stem(inputs)
+
+        for i, cell in enumerate(self.cells):
+            s0, s1 = s1, cell(s0, s1, self.drop_path_prob)
+
+        if getattr(self, 'time_average', False):
+            s1 = torch.mean(s1, dim=(-2, -1)) # global average pooling
+
+        logits = self.classifier(s1)
+        logits = self.sigmoid(logits.squeeze(-1))
+        return logits
 
 class bDNN(nn.Module):
     def __init__(self, window_size=7, hidden_size_1=512, hidden_size_2=512,
@@ -298,16 +499,16 @@ class LeeVAD(nn.Module):
 
         # spectral attention module
         self.spectral_attention = None
-        self.spec_lefts = [
+        self.spec_lefts = nn.ModuleList([
             nn.Conv2d(1 if i == 0 else Nc*(2**(i-1)),
                       Nc*(2**i), fc, padding='same')
-            for i in range(T)]
-        self.spec_rights = [
+            for i in range(T)])
+        self.spec_rights = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(1 if i == 0 else Nc*(2**(i-1)),
                           Nc*(2**i), fc, padding='same'),
                 nn.Sigmoid())
-            for i in range(T)]
+            for i in range(T)])
         
         # pipenet
         self.pipe_net_linear0 = nn.LazyLinear(Np)
@@ -407,6 +608,186 @@ class LeeVAD(nn.Module):
 
         # L = Lpost + Lpipe + λLatt
         return x, pipe, att
+
+class MarbleNet(nn.Module):
+  def __init__(self, num_classes, C=128):
+    super(MarbleNet, self).__init__()
+    dropout = 0
+    self.prologue = nn.Sequential(
+      nn.Conv1d(64, C, groups=64, kernel_size=11, padding='same', bias=False),
+      nn.BatchNorm1d(C),
+      nn.ReLU(inplace=True)
+    )
+
+    self.sub00 = nn.Sequential(
+      nn.Conv1d(C, C, kernel_size=13, groups=C, padding='same', bias=False),
+      nn.Conv1d(C, C//2, kernel_size=1,padding='same', bias=False),
+      nn.BatchNorm1d(C//2),
+      nn.ReLU(inplace=True),
+      nn.Dropout(dropout),
+      nn.Conv1d(C//2, C//2, kernel_size=13, groups=C//2, padding='same', bias=False),
+      nn.Conv1d(C//2, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2),
+    )
+
+    self.sub01 = nn.Sequential(
+      nn.Conv1d(C//2, C//2, kernel_size=13, groups=C//2, padding='same', bias=False),
+      nn.Conv1d(C//2, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2)
+    )
+
+    self.sub02 = nn.Sequential(
+      nn.ReLU(inplace=True),
+      nn.Dropout(dropout)
+    )
+
+    self.sub0C = nn.Sequential(
+      nn.Conv1d(C, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2)
+    )
+
+    self.sub10 = nn.Sequential(
+      nn.Conv1d(C//2, C//2, kernel_size=15, groups=C//2, padding='same', bias=False),
+      nn.Conv1d(C//2, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2),
+      nn.ReLU(inplace=True),
+      nn.Dropout(dropout),
+      nn.Conv1d(C//2, C//2, kernel_size=15, groups=C//2, padding='same', bias=False),
+      nn.Conv1d(C//2, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2),
+    )
+
+    self.sub11 = nn.Sequential(
+      nn.Conv1d(C//2, C//2, kernel_size=15, groups=C//2, padding='same', bias=False), 
+      nn.Conv1d(C//2, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2)
+    )
+
+    self.sub12 = nn.Sequential(
+      nn.ReLU(inplace=True),
+      nn.Dropout(dropout)
+    )
+
+    self.sub1C = nn.Sequential(
+      nn.Conv1d(C//2, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2)
+    )
+
+    self.sub20 = nn.Sequential(
+      nn.Conv1d(C//2, C//2, kernel_size=17, groups=C//2, padding='same', bias=False),
+      nn.Conv1d(C//2, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2),
+      nn.ReLU(inplace=True),
+      nn.Dropout(dropout),
+      nn.Conv1d(C//2, C//2, kernel_size=17, groups=C//2, padding='same', bias=False),
+      nn.Conv1d(C//2, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2),
+    )
+
+    self.sub21 = nn.Sequential(
+      nn.Conv1d(C//2, C//2, kernel_size=17, groups=C//2, padding='same', bias=False),
+      nn.Conv1d(C//2, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2)
+    )
+
+    self.sub22 = nn.Sequential(
+      nn.ReLU(inplace=True),
+      nn.Dropout(dropout)
+    )
+
+    self.sub2C = nn.Sequential(
+      nn.Conv1d(C//2, C//2, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C//2)
+    )
+
+    self.epi1 = nn.Sequential(
+      nn.Conv1d(C//2, C, groups=C//2, kernel_size=29, dilation=2, padding='same', bias=False),
+      nn.BatchNorm1d(C),
+      nn.ReLU()
+    )
+
+    self.epi2 = nn.Sequential(
+      nn.Conv1d(C, C, kernel_size=1, padding='same', bias=False),
+      nn.BatchNorm1d(C),
+      nn.ReLU()
+    )
+
+    self.epi3 = nn.Conv1d(C, 1, kernel_size=1, bias=True)
+    self.sigmoid = nn.Sigmoid()
+
+  def forward(self, input):
+    x = self.prologue(input)
+    x_ = self.sub0C(x)
+    x = self.sub00(x)
+    x = self.sub01(x)
+    
+    x = x + x_
+    x = self.sub02(x)
+
+    x_ = self.sub1C(x)
+    x = self.sub10(x)
+    x = self.sub11(x)
+    x = x + x_
+    x = self.sub12(x)
+
+    x_ = self.sub2C(x)
+    x = self.sub20(x)
+    x = self.sub21(x)
+    x = x + x_
+    x = self.sub22(x)
+
+    x = self.epi1(x)
+    x = self.epi2(x)
+    x = torch.mean(x, dim=2, keepdim=True)
+    x = self.epi3(x)
+    x = self.sigmoid(x)
+    x = torch.squeeze(x, 1)
+    return x
+
+
+class CNN_TD(nn.Module):
+  def __init__(self):
+    super(CNN_TD, self).__init__()
+    fsize = 32
+    td_dim = 256
+
+    self.ConvMPBlock_1 = self.ConvMPBlock(num_conv=2, fsize=fsize, in_channel=1)
+    self.ConvMPBlock_2 = self.ConvMPBlock(num_conv=2, fsize=2*fsize, in_channel=fsize)
+    self.ConvMPBlock_3 = self.ConvMPBlock(num_conv=3, fsize=4*fsize, in_channel=fsize*2)    
+    self.linear_1 = nn.Linear(1024, td_dim)
+    self.linear_2 = nn.Sequential(nn.Linear(td_dim, 128), nn.BatchNorm1d(128), nn.ReLU())
+    self.linear_3 = nn.Sequential(nn.Linear(128, 64), nn.BatchNorm1d(64), nn.ReLU())
+    self.linear_4 = nn.Sequential(nn.Linear(64, 1), nn.Sigmoid())
+
+  def ConvMPBlock(self, num_conv=2, fsize=32,  in_channel=None, kernel_size=3, pool_size=(2,2), strides=(2,2), BN=True, DO=False, MP=True):
+      mod_list = []
+      for i in range(num_conv):
+        if i == 0:
+          mod_list.append(nn.Conv2d(in_channel, fsize, kernel_size, padding='same'))
+        else:
+          mod_list.append(nn.Conv2d(fsize, fsize, kernel_size, padding='same'))
+        if BN:
+          mod_list.append(nn.BatchNorm2d(fsize))
+        if DO:
+          mod_list.append(nn.Dropout()) 
+        mod_list.append(nn.ReLU())
+      if MP:
+        mod_list.append(nn.MaxPool2d(kernel_size=pool_size, stride=strides))
+      return nn.Sequential(*mod_list)  
+
+  def forward(self, input):
+    # input channel * time * freq
+    x = self.ConvMPBlock_1(input)
+    x = self.ConvMPBlock_2(x)
+    x = self.ConvMPBlock_3(x)
+    x = torch.transpose(x, 1, 2)
+    x = torch.reshape(x, (x.size(0), x.size(1), x.size(2)*x.size(3)))
+    x = self.linear_1(x)
+    x = torch.mean(x, dim=1)
+    x = self.linear_2(x)
+    x = self.linear_3(x)
+    x = self.linear_4(x)    
+    return x
 
 
 if __name__ == '__main__':

@@ -5,6 +5,8 @@ import torch.nn.functional as F
 
 
 OPS = {
+    'zero_original':
+        lambda C, stride, affine: ZeroOriginal(stride),
     'zero':
         lambda C, stride, affine: Zero(stride),
     'avg_pool_3x3':
@@ -96,6 +98,27 @@ class ChannelFixer(nn.Module):
     def forward(self, x):
         if x.dim() == 4:
             # x = self.pre_linear(x)
+            # x = x.mean(dim=-1)
+            # x = torch.transpose(x, -2, -1)
+            x = force_1d(x)
+        x = torch.relu(x)
+        x = self.linear(x)
+        x = torch.transpose(x, -1, -2) # [N, L, C] to [N, C, L]
+        x = self.bn(x)
+        x = torch.transpose(x, -1, -2) # [N, C, L] to [N, L, C]
+        return x
+
+
+class ChannelFixerOriginal(nn.Module):
+    def __init__(self, C_in, C_out):
+        super(ChannelFixerOriginal, self).__init__()
+        self.pre_linear = ReLUConvBN(C_in, C_in//4, 1, 1, 0)
+        self.linear = nn.LazyLinear(C_out)
+        self.bn = nn.BatchNorm1d(C_out, affine=True)
+
+    def forward(self, x):
+        if x.dim() == 4:
+            x = self.pre_linear(x)
             # x = x.mean(dim=-1)
             # x = torch.transpose(x, -2, -1)
             x = force_1d(x)
@@ -341,6 +364,20 @@ class Zero(nn.Module):
         return x * 0.
 
 
+class ZeroOriginal(nn.Module):
+    def __init__(self, stride):
+        super(ZeroOriginal, self).__init__()
+        self.stride = stride
+
+    def forward(self, x):
+        if self.stride == 1:
+            return x.mul(0.)
+
+        if isinstance(self.stride, int):
+            return x[:, :, ::self.stride, ::self.stride].mul(0.)
+        return x[:, :, ::self.stride[0], ::self.stride[1]].mul(0.)
+
+
 class FactorizedReduce(nn.Module):
     def __init__(self, C_in, C_out, pool_size=1, affine=True):
         super(FactorizedReduce, self).__init__()
@@ -360,13 +397,18 @@ class FactorizedReduceOriginal(nn.Module):
         super(FactorizedReduceOriginal, self).__init__()
         assert C_out % 2 == 0
         self.relu = nn.ReLU(inplace=False)
-        self.conv = nn.Conv2d(C_in, C_out, 1, stride=(1, 2), padding=0,
-                              bias=False)
+        # self.conv_1 = nn.Conv2d(C_in, C_out // 2, 1, stride=2, padding=0, bias=False)
+        # self.conv_2 = nn.Conv2d(C_in, C_out // 2, 1, stride=2, padding=0, bias=False) 
+        self.conv_1 = nn.Conv2d(
+            C_in, C_out // 2, 1, stride=(1, 2), padding=0, bias=False)
+        self.conv_2 = nn.Conv2d(
+            C_in, C_out // 2, 1, stride=(1, 2), padding=0, bias=False) 
         self.bn = nn.BatchNorm2d(C_out, affine=affine)
-        
+
     def forward(self, x):
         x = self.relu(x)
-        out = self.conv(x)
+        # out = torch.cat([self.conv_1(x), self.conv_2(x[:,:,1:,1:])], dim=1)
+        out = torch.cat([self.conv_1(x), self.conv_2(x[:, :, :, 1:])], dim=1)
         out = self.bn(out)
         return out
 
