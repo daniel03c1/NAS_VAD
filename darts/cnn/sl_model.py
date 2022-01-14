@@ -11,8 +11,8 @@ class SelfAttentiveVAD(nn.Module):
     def __init__(self,
                  feature_size: int,
                  num_layers: int = 3,
-                 d_model: int = 128,
-                 dropout: float = 0.5):
+                 d_model: int = 64,
+                 dropout: float = 0):
         super(SelfAttentiveVAD, self).__init__()
         d_ff = d_model * 4
         self.input_layer = nn.Sequential(

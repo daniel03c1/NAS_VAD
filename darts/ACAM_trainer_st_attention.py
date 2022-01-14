@@ -105,10 +105,10 @@ class MarbleNetTrainer:
 
     def train(self):
         criterion = nn.BCELoss().cuda()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
 
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, 50, eta_min=1e-6)
+            optimizer, self.epochs, eta_min=1e-6)
         train_queue = torch.utils.data.DataLoader(
             self.train_data, batch_size=self.batch_size,
             pin_memory=False, num_workers=0, shuffle=True)
@@ -127,7 +127,7 @@ class MarbleNetTrainer:
             train_auc, train_obj = train_step(
                 train_queue, self.model, criterion, optimizer, scheduler=scheduler)
             valid_auc, valid_obj = valid_step(
-                valid_queue, self.model, criterion, self.gpu_id)
+                valid_queue, self.model, criterion, self.dataset_name, self.gpu_id)
             end = time.time()
             values = [e, scheduler.get_last_lr()[0], train_auc, valid_auc,
                       end - start]
@@ -191,7 +191,7 @@ def train_step(train_queue, model, criterion, optimizer, scheduler, gpu_id=0):
     return auc, objs.avg
 
 
-def valid_step(valid_queue, model, criterion, gpu_id=0):
+def valid_step(valid_queue, model, criterion, dataset, gpu_id=0):
     objs = AvgrageMeter()
     preds, targets = [], []
     model.eval()
@@ -199,6 +199,21 @@ def valid_step(valid_queue, model, criterion, gpu_id=0):
     batch_size = 512
     device = 'cuda'
     model.to(device)
+    if dataset == 'TIMIT':
+        for i in range(4):
+            for step, (inputs, target) in enumerate(valid_queue):
+                with torch.no_grad():
+                    inputs = inputs.to(device)
+                    target = target.to(device)
+                    target = target.type(torch.float32)
+                    logits, pipe, attn = model(inputs)
+                    d = criterion(logits, target)
+                    n = inputs.size(0)
+                    objs.update(d.item(), n)
+                    preds.append(logits.view(-1).detach()) 
+                    targets.append(target.view(-1).detach())
+
+    
     for step, (inputs, target) in enumerate(valid_queue):
         with torch.no_grad():
             inputs = inputs.to(device)
@@ -250,11 +265,14 @@ def test_step(valid_queue, model, criterion, model_type, window):
             targets.append(target.view(-1).detach())
             # if step % REPORT_FREQ == 0:
             #     logging.info(f'valid {step:03d} {objs.avg} {auc.compute()}')
-    preds = torch.cat(preds, dim=0).cpu()
-    targets = torch.cat(targets, dim=0).cpu()
+            preds = torch.cat(preds, dim=0).cpu()
+            targets = torch.cat(targets, dim=0).cpu()
 
-    auc = roc_auc_score(torch.round(targets), preds)
-    f1 = f1_score(torch.round(targets), (preds >= 0.5)*1)
+            auc = roc_auc_score(torch.round(targets), preds)
+            f1 = f1_score(torch.round(targets), (preds >= 0.5)*1)
+            preds, targets = [], []
+            print("AUC is", auc, 'F1 is', f1)
+    
     del preds, targets
 
     return auc, f1, objs.avg
@@ -271,6 +289,8 @@ class TIMIT_Dataset(torch.utils.data.Dataset):
                   snr_low=-10, snr_high=10, train_portion=1, window=[-19, -9, -1, 0, 1, 9, 19], model_type='Marblenet'):
         self.audio_files = audio_files
         self.label_files = label_files
+        self.audio_files = [torch.from_numpy(np.load(item)) for item in self.audio_files]
+        self.label_files = [torch.from_numpy(np.load(item)) for item in self.label_files]
         self.mode = mode
         self.n_voices = len(self.audio_files)
         self.n_fft = n_fft
@@ -292,15 +312,15 @@ class TIMIT_Dataset(torch.utils.data.Dataset):
         return self.n_voices
 
     def __getitem__(self, idx):
-        v_name, l_name = self.audio_files[idx], self.label_files[idx]
+        voice, label = self.audio_files[idx].cuda(), self.label_files[idx].cuda()
 
-        voice = torch.from_numpy(np.load(v_name)).cuda()
+        #voice = torch.from_numpy(np.load(v_name)).cuda()
         # if self.mode == 'train':
         #     weight = torch.pow(10., torch.rand([])*1/2 - 1/4) # [-1/4, 1/4]
         #     voice *= weight.to(voice.dtype)
 
         voice = torch.squeeze(voice)
-        label = torch.from_numpy(np.load(l_name)).cuda()
+        #label = torch.from_numpy(np.load(l_name)).cuda()
         label = label[:voice.size(1)]
         assert label.shape[0] == voice.shape[1]
         if self.mode != 'test':
@@ -508,11 +528,12 @@ if __name__ == '__main__':
                             ('ffn_2', 2), ('attn_2', 1)],
                     reduce_concat=range(2, 6))
 
-    CV_TRAIN = '/root/VAD-NAS/CV_Audioset_Train/audio,/root/VAD-NAS/CV_Audioset_Valid/audio'
-    CV_TEST = '/root/VAD-NAS/CV_Audioset_Train/audio,/root/VAD-NAS/CV_Audioset_Test/audio'
-    TIMIT_TRAIN = '/root/VAD-NAS/TIMIT_SoundIdea_Train/audio,/root/VAD-NAS/TIMIT_SoundIdea_Valid/audio'
-    TIMIT_TEST = '/root/VAD-NAS/TIMIT_SoundIdea_Train/audio,/root/VAD-NAS/TIMIT_SoundIdea_Test/audio'
-    AVA_TEST = 'a,/root/VAD-NAS/AVA_Test'
+    CV_TRAIN = '/data2/CV_Audioset_Train/audio,/data2/CV_Audioset_Valid/audio'
+    CV_TEST = '/data2/CV_Audioset_Train/audio,/data2/CV_Audioset_Test/audio'
+    TIMIT_TRAIN = '/data2/TIMIT_SoundIdea_Train/audio,/data2/TIMIT_SoundIdea_Valid/audio'
+    TIMIT_TEST = '/data2/TIMIT_SoundIdea_Train/audio,/data2/TIMIT_SoundIdea_Test/audio'
+    #AVA_TEST = 'a,/data2/AVA_Test'
+    AVA_TEST = 'a,/data2/real_data_npy'
     # TIMIT_TRAIN = '/data2/dataset/mat/TIMIT_SoundIdea_Train/audio,/data2/dataset/mat/TIMIT_SoundIdea_Valid/audio'
     # TIMIT_TEST = '/root/VAD-NAS/TIMIT_SoundIdea_Train/audio,/root/VAD-NAS/TIMIT_SoundIdea_Test/audio'
 
@@ -523,7 +544,7 @@ if __name__ == '__main__':
 
     elif args.mode == 'train' and args.dataset == 'TIMIT':
         t = MarbleNetTrainer(TIMIT_TRAIN, args.save_path,
-                            dataset=args.dataset, epochs=300, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
+                            dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
                             mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
 
     elif args.mode == 'test' and args.test_dataset == 'CV':
@@ -543,14 +564,14 @@ if __name__ == '__main__':
     if args.mode =='train':
         t.train()
     else:
-        t = MarbleNetTrainer(TIMIT_TEST, args.save_path,
-                            dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
-                            mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'TIMIT', n_mels=args.n_mels)
-        t.test()
-        t = MarbleNetTrainer(CV_TEST, args.save_path,
-                            dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
-                            mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'CV', n_mels=args.n_mels)
-        t.test()
+        #t = MarbleNetTrainer(TIMIT_TEST, args.save_path,
+        #                    dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
+        #                    mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'TIMIT', n_mels=args.n_mels)
+        #t.test()
+        #t = MarbleNetTrainer(CV_TEST, args.save_path,
+        #                    dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
+        #                    mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'CV', n_mels=args.n_mels)
+        #t.test()
         t = MarbleNetTrainer(AVA_TEST, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
                             mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'AVA', n_mels=args.n_mels)

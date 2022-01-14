@@ -126,8 +126,11 @@ class Encoder(nn.Module):
 
     def forward(self, attention: Tensor, attended_input: Tensor):
         batch_size, window_size, feature_size = attended_input.size()
-        attended_input = attended_input.view(batch_size,
+        try:
+            attended_input = attended_input.reshape(batch_size,
                                              window_size * feature_size)
+        except:
+            import pdb; pdb.set_trace()
         return self.aggregate(
             self.transform_attention(attention)
             + self.transform_attended_input(attended_input))

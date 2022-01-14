@@ -18,11 +18,11 @@ from contextlib import contextmanager
 import torch
 
     
-speech_dir = '/data2/dataset/cv-corpus-7.0/cv-corpus-7.0-2021-07-21/train'     
-noise_dir = '/data2/dataset/Audioset/DNS-Challenge/datasets/noise'
+#speech_dir = '/data2/dataset/cv-corpus-7.0/cv-corpus-7.0-2021-07-21/train'     
+#noise_dir = '/data2/dataset/Audioset/DNS-Challenge/datasets/noise'
 
-speech_dir = '/data1/datasets/ai_challenge/TIMIT_TRAIN'     
-noise_dir = '/data2/dataset/mat/SoundIdeas'
+speech_dir = '/data2/real_data'     
+#noise_dir = '/data2/dataset/mat/SoundIdeas'
 
 
 def pad_voice_label(voice, label, pad_size=None):
@@ -47,6 +47,7 @@ def synthesize(speech, noise):
 def label_reshape(label=None, frame_length=400, frame_step=160):
     window = np.ones(frame_length)
     length = len(label)
+    label = np.squeeze(label)
     label = np.concatenate([np.zeros(frame_length - frame_step), label])
     label = (convolve(label, window)[::frame_step][:int(np.floor(length/frame_step))] > frame_length //2)*1
     return label
@@ -75,14 +76,16 @@ def normalize_wav(wav, label=None, target_level=-25, **kwargs):
         return wav, label
     return wav
 
-label_list = sorted(os.listdir(speech_dir))[::2]
-label_list = [os.path.join(speech_dir, item) for item in label_list][700:]
+#label_list = sorted(os.listdir(speech_dir))[::2]
+label_list = [item for item in sorted(os.listdir(speech_dir)) if item.endswith('.npy')]
+print(label_list)
+label_list = [os.path.join(speech_dir, item) for item in label_list]
 
 audio_list = [item.replace('.npy', '.wav') for item in label_list]
 audio_list = [os.path.join(speech_dir, item) for item in audio_list]
 
-noise_list = glob(f'{noise_dir}/*.wav')
-noise_list = [item for item in noise_list if item.endswith('.wav') and 'Freesound' not in item][:22160]
+#noise_list = glob(f'{noise_dir}/*.wav')
+#noise_list = [item for item in noise_list if item.endswith('.wav') and 'Freesound' not in item][:22160]
 
 @contextmanager
 def poolcontext(*args, **kwargs):
@@ -132,38 +135,41 @@ def save_to_npy(audio_name, label_name):
 
 
 for audio_name, label_name in tqdm(zip(audio_list, label_list)):
-    noise_name = random.choice(noise_list)
+    #noise_name = random.choice(noise_list)
     audio, sr_1 = torchaudio.load(audio_name) 
-    noise, sr_2 = torchaudio.load(noise_name)
+    #noise, sr_2 = torchaudio.load(noise_name)
     
     audio = torch.mean(audio, dim=0)
-    noise = torch.mean(noise, dim=0)
+    #noise = torch.mean(noise, dim=0)
     resample_1 = torchaudio.transforms.Resample(sr_1, 16000)
-    resample_2 = torchaudio.transforms.Resample(sr_2, 16000)
+    #resample_2 = torchaudio.transforms.Resample(sr_2, 16000)
 
 
     audio = torch.squeeze(resample_1(audio)).numpy()
-    noise = torch.squeeze(resample_2(noise)).numpy()
-
+    #noise = torch.squeeze(resample_2(noise)).numpy()
+    print(label_name)
     label = np.load(label_name)
     audio, label = pad_voice_label(audio, label)
     label = label_reshape(label)
     audio = normalize_wav(audio)
 
-    while(len(audio) >= len(noise)):
-        new_noise, sr = torchaudio.load(random.choice(noise_list))
-        resample = torchaudio.transforms.Resample(sr, 16000)
-        new_noise = torch.mean(new_noise, dim=0)
-        new_noise = torch.squeeze(resample(new_noise)).numpy()
-        noise = np.concatenate((noise, new_noise))
+    #while(len(audio) >= len(noise)):
+    #    new_noise, sr = torchaudio.load(random.choice(noise_list))
+    #    resample = torchaudio.transforms.Resample(sr, 16000)
+    #    new_noise = torch.mean(new_noise, dim=0)
+    #    new_noise = torch.squeeze(resample(new_noise)).numpy()
+    #    noise = np.concatenate((noise, new_noise))
     
-    offset = np.random.randint(low = 0, high = len(noise) - len(audio))
-    added_noise = normalize_wav(noise[offset:offset+len(audio)])
-    audio = synthesize(audio, added_noise)
-    audio = normalize_wav(audio)
-
-    np.save(f'/data2/dataset/mat/TIMIT_train/{os.path.basename(audio_name)[:-4]}.npy', audio)
-    np.save(f'/data2/dataset/mat/TIMIT_train/{os.path.basename(label_name)[:-4]}_label.npy', label)
+    #offset = np.random.randint(low = 0, high = len(noise) - len(audio))
+    #added_noise = normalize_wav(noise[offset:offset+len(audio)])
+    #audio = synthesize(audio, added_noise)
+    #audio = normalize_wav(audio)
+    spectrogram = torchaudio.transforms.Spectrogram(n_fft=400, hop_length=160)
+    audio = torch.unsqueeze(torch.from_numpy(audio), 0)
+    audio = spectrogram(audio)
+    audio = audio.numpy()
+    np.save(f'/data2/real_data_npy/{os.path.basename(audio_name)[:-4]}.npy', audio)
+    np.save(f'/data2/real_data_npy/{os.path.basename(label_name)[:-4]}_label.npy', label)
     print("succeed")
 
 
