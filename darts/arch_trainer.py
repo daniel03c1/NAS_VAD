@@ -15,7 +15,7 @@ from sklearn.metrics import roc_auc_score
 
 # import darts.cnn.utils as darts_utils
 from darts.cnn.genotypes import Genotype
-from darts.cnn.model import NetworkVAD, NetworkVADOriginal
+from darts.cnn.model import NetworkVADv2, NetworkVADOriginal
 from darts.cnn.utils import count_parameters_in_MB, save, AvgrageMeter
 from darts.darts_config import *
 from misc.random_string import random_generator
@@ -82,9 +82,9 @@ class DARTSTrainer:
 
         # Prepare the model for training
         print(genotype)
-        self.model = NetworkVAD(INIT_CHANNELS, LAYERS,
-                                genotype, use_1d, DROPPATH_PROB, time_average,
-                                len(window), n_mels)
+        self.model = NetworkVADv2(INIT_CHANNELS, LAYERS,
+                                  genotype, use_1d, DROPPATH_PROB, time_average,
+                                  len(window), n_mels)
         # self.model = NetworkVADOriginal(INIT_CHANNELS, LAYERS,
         #                                 genotype, use_1d, DROPPATH_PROB,
         #                                 time_average, len(window), n_mels)
