@@ -36,3 +36,13 @@ python3 architecture_search --data_path={your_speech_directory},{your_noise_dire
 - "--pool_size": the number of networks within a network pool.
 - "--save_path": where to save architecture search results
 - "--epochs": how many training epochs
+
+Currently, the number of workers for the dataloader is set at 12.
+If you wish to increase the number of workers or if your machine cannot handle that many workers, change the default value of 12 for DARTSTrainer in **darts/arch_trainer.py**.
+
+
+**How to modify the search space**
+
+- To change the initial channels or the number of layers (cells) for VAD models, modify **darts/darts_config.py**.
+- To implement new operations, use **darts/cnn/operations.py**.
+- To modify the set of operations for each cell type and the number of operation nodes per cell, go to **darts/darts_objectives.py** and modify the **get_ops** function.
