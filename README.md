@@ -1,8 +1,33 @@
 # NAS-VAD: Neural Architecture Search for Voice Activity Detection
-Daniel Rho, Jinhyeok Park, and Jong Hwan Ko
-
+Daniel Rho, Jinhyeok Park, and Jong Hwan Ko (https://arxiv.org/abs/2201.09032)
 
 Our code is based on NAS-BOWL (https://github.com/xingchenwan/nasbowl)
+
+# 0. How to instantiate our model
+```bash
+from darts.cnn.genotypes import Genotype
+from darts.cnn.model import NetworkVADv2
+
+# config
+channel = 40
+n_cells = 4
+genotype = Genotype(normal=[('SE_0.25', 0), ('MBConv_3x3_x2', 1),
+                            ('zero', 2), ('SE_0.25', 0),
+                            ('MBConv_5x5_x4', 3), ('MBConv_5x5_x4', 2),
+                            ('sep_conv_5x5', 2), ('MBConv_5x5_x2', 1)],
+                    normal_concat=range(2, 6),
+                    reduce=[('MBConv_3x3_x4', 1), ('MBConv_3x3_x4', 0),
+                            ('MBConv_5x5_x2', 2), ('MHA2D_2', 0),
+                            ('MHA2D_4', 2), ('FFN2D_1', 1),
+                            ('GLU2D_5', 4), ('MBConv_5x5_x2', 2)],
+                    reduce_concat=range(2, 6))
+use_second = True
+n_frames = 7
+n_mels = 80
+
+net = NetworkVADv2(channel, n_cells, genotype, use_second,
+                   height=n_frames, width=n_mels)
+```
 
 
 # 1. How to run a network search
