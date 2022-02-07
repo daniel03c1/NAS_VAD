@@ -49,7 +49,7 @@ If you wish to increase the number of workers or if your machine cannot handle t
 
 # 2. How to train model
 
-1. you need synthesized spectrogram and label to train model. you should prepare TRAIN, VALID folder. And there should be spectrogram '*_spec.npy' shape of [1, 201, n_frames] and corresponding framewise label '*.npy' (you can refer synthesize_audio.py)
+1. you need synthesized spectrogram and label to train model. you should prepare TRAIN, VALID, TEST folder. And there should be spectrogram '*_spec.npy' shape of [1, 201, n_frames] and corresponding framewise label '*.npy' in same folder. (you can refer synthesize_audio.py to synthesize audio)
 
 2. There are two types of trainer, one for BDNN like model (trainer.py) and one for Spectro-Temporal Attention(trainer_st_attention.py)
 
@@ -62,22 +62,21 @@ python trainer.py --model 'Search2D' --found 'TIMIT' --mode 'train' --dataset 'T
 ```
 
 - "--model" : type of model you want to use, and if model is from NAS you have to set genotypes at trainer and use '--found' option to specify your genotypes. (You can refer main part of tainer.py file to set genotypes). BDNN, ACAM, Self Attentive VAD is available.
-- "--dataset" : which dataset you will use 
-- "--n_mels" : Determine number of mel you want to use
-- "--save_path" : path where model will be stored
+- "--dataset" : Dataset to be used for training 
+- "--n_mels" : The number of mel you want to use(default : 80)
+- "--save_path" : path where model will be stored. Just enter the folder name. It will save model automatically.
 
 # 3. How to test model
 
 
 To test baseline model you should change the path of train and validation foler by changing CV_TEST, TIMIT_TEST at trainer.py or trainer_st_attention.py (format should be '*,Test_path') 
 
-And To test model execute 
+And To test model, execute 
 ```bash
 python trainer.py --model 'Search2D' --found 'TIMIT' --mode 'train' --dataset 'TIMIT' --test_dataset 'TIMIT' --n_mels 80' --save_path "./saved_model"
 ```
-
 - "--model" : type of model you want to use, and if model is from NAS you have to set genotypes at trainer and use '--found' option to specify your genotypes. (You can refer main part of tainer.py file to set genotypes).
 - "--dataset" : which dataset used for train  
 - "--n_mels" : Determine number of mel you want to use
-- "--save_path" : path where model will be loaded
+- "--save_path" : path where models are saved. Just enter the folder name. It will automatically load the model according to the model name and dataset used for training.
 - "--test_dataset" : which dataset you want to test
