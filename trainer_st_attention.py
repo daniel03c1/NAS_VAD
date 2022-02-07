@@ -461,81 +461,13 @@ if __name__ == '__main__':
     parser.add_argument('--test_dataset', type=str, default='TIMIT')
     parser.add_argument('--save_path', type=str, default='./saved_model')
     parser.add_argument('--n_mels', type=int, default=64)
-    
 
     args = parser.parse_args()
-
-    ## CV 2D
-    if args.model == 'Search2D' and args.found == 'CV':
-        genotype = Genotype(normal=[('skip_connect', 0), ('skip_connect', 1),
-                                    ('max_pool_3x3', 1), ('avg_pool_3x3', 0),
-                                    ('sep_conv_3x3', 0), ('sep_conv_5x5', 1),
-                                    ('max_pool_3x3', 1), ('skip_connect', 2)],
-                            normal_concat=range(2, 6),
-                            reduce=[('skip_connect', 0), ('skip_connect', 1),
-                                    ('max_pool_3x3', 1), ('avg_pool_3x3', 0),
-                                    ('sep_conv_3x3', 0), ('sep_conv_5x5', 1),
-                                    ('max_pool_3x3', 1), ('skip_connect', 2)],
-                            reduce_concat=range(2, 6))
-    ## CV 1D + 2D
-    if args.model == 'Search1D2D' and args.found == 'CV':
-        genotype = Genotype(normal=[('sep_conv_5x5', 0), ('sep_conv_5x5', 1),
-                                    ('skip_connect', 0), ('zero', 2),
-                                    ('max_pool_3x3', 1), ('skip_connect', 0),
-                                    ('zero', 3), ('dil_conv_3x3', 1)],
-                            normal_concat=range(2, 6),
-                            reduce=[('attn_2', 1), ('skip_connect', 0),
-                                    ('zero', 2), ('ffn_05', 1),
-                                    ('attn_4', 2), ('glu_3', 1),
-                                    ('attn_2', 2), ('biLSTM', 3)],
-                            reduce_concat=range(2, 6))
-
-    # TIMIT only 2D (new_timit...)
-    if args.model == 'Search2D' and args.found == 'TIMIT':
-        genotype = Genotype(normal=[('zero', 0), ('skip_connect', 1),
-                                    ('dil_conv_3x3', 0), ('max_pool_3x3', 1),
-                                    ('skip_connect', 1), ('avg_pool_3x3', 0),
-                                    ('zero', 2), ('sep_conv_3x3', 4)],
-                            normal_concat=range(2, 6),
-                            reduce=[('zero', 0), ('skip_connect', 1),
-                                    ('dil_conv_3x3', 0), ('max_pool_3x3', 1),
-                                    ('skip_connect', 1), ('avg_pool_3x3', 0),
-                                    ('zero', 2), ('sep_conv_3x3', 4)],
-                            reduce_concat=range(2, 6))
-
-        # TIMIT 2D + 1D
-    if args.model == 'Search1D2D' and args.found == 'TIMIT':
-        '''
-        genotype = Genotype(normal=[('max_pool_3x3', 0), ('dil_conv_5x5', 1),
-                                    ('sep_conv_3x3', 2), ('skip_connect', 0),
-                                    ('skip_connect', 0), ('sep_conv_5x5', 2),
-                                    ('skip_connect', 3), ('avg_pool_3x3', 0)],
-                            normal_concat=range(2, 6),
-                            reduce=[('ffn_2', 0), ('biGRU', 1),
-                                    ('skip_connect', 1), ('ffn_1', 0),
-                                    ('skip_connect', 1), ('GRU', 3),
-                                    ('attn_2', 2), ('attn_2', 3)],
-                            reduce_concat=range(2, 6))
-        '''
-        genotype = Genotype(normal=[('max_pool_3x3', 1), ('dil_conv_3x3', 0),
-                            ('skip_connect', 0), ('skip_connect', 1),
-                            ('zero', 2), ('dil_conv_3x3', 3),
-                            ('zero', 4), ('sep_conv_5x5', 0)],
-                    normal_concat=range(2, 6),
-                    reduce=[('glu_5', 1), ('glu_5', 0),
-                            ('biGRU', 2), ('glu_5', 0),
-                            ('glu_5', 2), ('sep_conv_3', 1),
-                            ('ffn_2', 2), ('attn_2', 1)],
-                    reduce_concat=range(2, 6))
-
     CV_TRAIN = '/data2/CV_Audioset_Train/audio,/data2/CV_Audioset_Valid/audio'
     CV_TEST = '/data2/CV_Audioset_Train/audio,/data2/CV_Audioset_Test/audio'
     TIMIT_TRAIN = '/data2/TIMIT_SoundIdea_Train/audio,/data2/TIMIT_SoundIdea_Valid/audio'
     TIMIT_TEST = '/data2/TIMIT_SoundIdea_Train/audio,/data2/TIMIT_SoundIdea_Test/audio'
-    #AVA_TEST = 'a,/data2/AVA_Test'
-    AVA_TEST = 'a,/data2/real_data_npy'
-    # TIMIT_TRAIN = '/data2/dataset/mat/TIMIT_SoundIdea_Train/audio,/data2/dataset/mat/TIMIT_SoundIdea_Valid/audio'
-    # TIMIT_TEST = '/root/VAD-NAS/TIMIT_SoundIdea_Train/audio,/root/VAD-NAS/TIMIT_SoundIdea_Test/audio'
+    AVA_TEST = 'a,/data2/AVA_Test'
 
     if args.mode == 'train' and args.dataset == 'CV':
         t = MarbleNetTrainer(CV_TRAIN, args.save_path,
