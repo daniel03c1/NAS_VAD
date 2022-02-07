@@ -46,3 +46,38 @@ If you wish to increase the number of workers or if your machine cannot handle t
 - To change the initial channels or the number of layers (cells) for VAD models, modify **darts/darts_config.py**.
 - To implement new operations, use **darts/cnn/operations.py**.
 - To modify the set of operations for each cell type and the number of operation nodes per cell, go to **darts/darts_objectives.py** and modify the **get_ops** function.
+
+# 2. How to train model
+
+1. you need synthesized spectrogram and label to train model. you should prepare TRAIN, VALID folder. And there should be spectrogram '*_spec.npy' shape of [1, 201, n_frames] and corresponding framewise label '*.npy' (you can refer synthesize_audio.py)
+
+2. There are two types of trainer, one for BDNN like model (trainer.py) and one for Spectro-Temporal Attention(trainer_st_attention.py)
+
+3. you should change the path of train and validation foler by changing CV_TRAIN, TIMIT_TRAIN at trainer.py or trainer_st_attention.py (format should be 'Train_path,Valid_path') 
+
+To run baseline model execute 
+
+```bash
+python trainer.py --model 'Search2D' --found 'TIMIT' --mode 'train' --dataset 'TIMIT' --n_mels 80' --save_path "./saved_model"
+```
+
+- "--model" : type of model you want to use, and if model is from NAS you have to set genotypes at trainer and use '--found' option to specify your genotypes. (You can refer main part of tainer.py file to set genotypes). BDNN, ACAM, Self Attentive VAD is available.
+- "--dataset" : which dataset you will use 
+- "--n_mels" : Determine number of mel you want to use
+- "--save_path" : path where model will be stored
+
+# 3. How to test model
+
+
+To test baseline model you should change the path of train and validation foler by changing CV_TEST, TIMIT_TEST at trainer.py or trainer_st_attention.py (format should be '*,Test_path') 
+
+And To test model execute 
+```bash
+python trainer.py --model 'Search2D' --found 'TIMIT' --mode 'train' --dataset 'TIMIT' --test_dataset 'TIMIT' --n_mels 80' --save_path "./saved_model"
+```
+
+- "--model" : type of model you want to use, and if model is from NAS you have to set genotypes at trainer and use '--found' option to specify your genotypes. (You can refer main part of tainer.py file to set genotypes).
+- "--dataset" : which dataset used for train  
+- "--n_mels" : Determine number of mel you want to use
+- "--save_path" : path where model will be loaded
+- "--test_dataset" : which dataset you want to test
