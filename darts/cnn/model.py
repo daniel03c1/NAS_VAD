@@ -557,3 +557,126 @@ class MarbleNet(nn.Module):
     x = torch.squeeze(x, 1)
     return x
 
+
+class LeeVAD(nn.Module):
+    def __init__(self, frequency_bins, T=4, Nc=16, fc=3, Np=256, Nt=128, H=4,
+                 dropout=0.5):
+        super(LeeVAD, self).__init__()
+        self.T = T
+        self.Nc = Nc
+        self.fc = fc
+        self.Np = Np
+        self.Nt = Nt
+        self.H = H
+
+        # spectral attention module
+        self.spectral_attention = None
+        self.spec_lefts = nn.ModuleList([
+            nn.Conv2d(1 if i == 0 else Nc*(2**(i-1)),
+                      Nc*(2**i), fc, padding='same')
+            for i in range(T)])
+        self.spec_rights = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(1 if i == 0 else Nc*(2**(i-1)),
+                          Nc*(2**i), fc, padding='same'),
+                nn.Sigmoid())
+            for i in range(T)])
+
+        # pipenet
+        self.pipe_net_linear0 = nn.LazyLinear(Np)
+        self.pipe_net_post0 = nn.Sequential(
+            nn.BatchNorm1d(Np),
+            nn.ReLU(),
+            nn.Dropout(dropout))
+        self.pipe_net_linear1 = nn.Linear(Np, Np)
+        self.pipe_net_post1 = nn.Sequential(
+            nn.BatchNorm1d(Np),
+            nn.ReLU(),
+            nn.Dropout(dropout))
+        self.pipe_out = nn.Sequential(nn.Linear(Np, 1), nn.Sigmoid())
+
+        # temporal attention module
+        self.query = nn.Sequential(
+            nn.Linear(Np, Nt, bias=False),
+            nn.BatchNorm1d(Nt),
+            nn.Sigmoid())
+        self.key_linear = nn.Linear(Np, Nt, bias=False)
+        self.key_post = nn.Sequential(
+            nn.BatchNorm1d(Nt),
+            nn.Sigmoid())
+        self.value_linear = nn.Linear(Np, Nt, bias=False)
+        self.value_post = nn.Sequential(
+            nn.BatchNorm1d(Nt),
+            nn.Sigmoid())
+
+        self.scale = 1 / np.sqrt(Nt).astype(np.float32)
+        self.H = H # number of heads
+
+        # post net
+        self.post_net_linear = nn.LazyLinear(Np)
+        self.post_net_post = nn.Sequential(
+            nn.BatchNorm1d(Np),
+            nn.ReLU(),
+            nn.Dropout(dropout))
+        self.regressor = nn.Sequential(nn.Linear(Np, 1), nn.Sigmoid())
+
+    def forward(self, x):
+        # x: [chan, time, freq]
+
+        # spectral attention
+        for i in range(self.T):
+            x = self.spec_lefts[i](x) * self.spec_rights[i](x)
+            x = F.max_pool2d(x, [1, 2])
+        x = torch.transpose(x, -2, -3) # [b, time, chan, feat]
+        x = torch.reshape(x, (*x.size()[:2], -1))
+
+        # pipe net
+        # [b, time, feat]
+        x = self.pipe_net_linear0(x)
+        x = torch.transpose(x, -1, -2) # [b, time, feat] -> [b, feat, time]
+        x = self.pipe_net_post0(x)
+        x = torch.transpose(x, -1, -2) # [b, feat, time] -> [b, time, feat]
+        x = self.pipe_net_linear1(x)
+        x = torch.transpose(x, -1, -2) # [b, time, feat] -> [b, feat, time]
+        x = self.pipe_net_post1(x)
+        x = torch.transpose(x, -1, -2) # [b, feat, time] -> [b, time, feat]
+
+        pipe = self.pipe_out(x).squeeze(-1)
+
+        # temporal attention
+        q = self.query(torch.mean(x, dim=-2)) # [b, Nt]
+        q = torch.unsqueeze(q, dim=-2) # [b, 1, Nt]
+
+        k = self.key_linear(x)
+        k = torch.transpose(k, -1, -2)
+        k = self.key_post(k)
+        k = torch.transpose(k, -1, -2) # [b, time, Nt]
+
+        v = self.value_linear(x)
+        v = torch.transpose(v, -1, -2)
+        v = self.value_post(v)
+        v = torch.transpose(v, -1, -2) # [b, time, Nt]
+
+        att = F.softmax(torch.sum(q * k, dim=-1) * self.scale, dim=-1)
+
+        # [b, 1, Nt//H, H]
+        q = q.reshape((*q.size()[:-1], self.Nt//self.H, self.H)) 
+        # [b, time, Nt//H, H]
+        k = k.reshape((*k.size()[:-1], self.Nt//self.H, self.H)) 
+        v = v.reshape((*v.size()[:-1], self.Nt//self.H, self.H)) 
+
+        # [b, time, Nt//H, H] * [b, time, 1, H]
+        x = v * F.softmax(torch.sum(q * k, dim=-2, keepdim=True) * self.scale,
+                          dim=-2)
+        x = torch.reshape(x, (*x.size()[:-2], -1))
+
+        # post net
+        x = self.post_net_linear(x)
+        x = torch.transpose(x, -1, -2) # [b, time, feat] -> [b, feat, time]
+        x = self.post_net_post(x)
+        x = torch.transpose(x, -1, -2) # [b, feat, time] -> [b, time, feat]
+
+        x = self.regressor(x).squeeze(-1)
+
+        # L = Lpost + Lpipe + λLatt
+        return x, pipe, att

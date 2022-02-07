@@ -29,7 +29,7 @@ import warnings
 import random
 warnings.filterwarnings('ignore')
 
-class MarbleNetTrainer:
+class Trainer:
     def __init__(self,
                  data_path,
                  model_save_path: str,
@@ -58,9 +58,8 @@ class MarbleNetTrainer:
         self.test_data = test_dataset
         # Prepare the model for training
         if self.mode == 'train':
-            if self.model_type == 'Marblenet':
-                self.model = MarbleNet(num_classes=2, C=128).cuda()
-                print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
+            if self.model_type == 'STA':
+                 self.model = LeeVAD(n_mels).cuda()
             elif self.model_type =='Search2D':
                 self.model = NetworkVADOriginal(16, 8, genotype, use_second=False).cuda()
             elif self.model_type == 'SL_model':
@@ -71,16 +70,13 @@ class MarbleNetTrainer:
                 self.model = bDNN().cuda()
             elif self.model_type in 'New1D2D':
                 self.model = NetworkVADv2(40, 4, genotype, True, 0, False, len(window), n_mels).cuda()
-            else:
-                # self.model = NetworkVAD(8, 6, genotype, use_second=True).cuda()
-                self.model = NetworkVAD(10, 3, genotype, use_second=True).cuda()
 
         else:
             path_list = glob(f'{self.save_path}/*_{self.model_type}_{self.dataset_name}_{self.found}.pth')
             path_num = sorted([int(path.split('/')[-1].split('_')[0]) for path in path_list])
             PATH = os.path.join(self.save_path, f'{path_num[-1]}_{self.model_type}_{self.dataset_name}_{self.found}.pth')
-            if self.model_type == 'Marblenet':
-                self.model = MarbleNet(num_classes=2, C=128).cuda()
+            if self.model_type == 'STA':
+                self.model = LeeVAD(n_mels).cuda()
                 self.model.load_state_dict(torch.load(PATH))
                 print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
 
@@ -103,11 +99,6 @@ class MarbleNetTrainer:
                 print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
             elif self.model_type == 'New1D2D':
                 self.model = NetworkVADv2(40, 4, genotype, True, 0, False, len(window), n_mels).cuda()
-                self.model.load_state_dict(torch.load(PATH))
-                print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
-            else:
-                self.model = NetworkVAD(8, 6, genotype, use_second=True).cuda()
-                # self.model = NetworkVAD(10, 3, genotype, use_second=True).cuda()
                 self.model.load_state_dict(torch.load(PATH))
                 print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
 
@@ -160,12 +151,11 @@ class MarbleNetTrainer:
             self.model.drop_path_prob = 0
             start = time.time()
             train_auc, train_obj = train_step(
-                train_queue, self.model, criterion, optimizer, scheduler=scheduler)
+                train_queue, self.model, criterion, optimizer, self.model_type)
             if e == 0:
                 print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
-                import pdb; pdb.set_trace
             valid_auc, valid_obj, valid_loss = valid_step(
-                valid_queue, self.model, criterion, self.dataset_name, self.gpu_id)
+                valid_queue, self.model, criterion, self.dataset_name, self.model_type)
             end = time.time()
             values = [e, scheduler.get_last_lr()[0], train_auc, valid_auc,
                       end - start]
@@ -196,11 +186,10 @@ class MarbleNetTrainer:
         print(f'Model:{self.model_type} found:{self.found}, train:{self.dataset_name}, test:{self.test_data}, test_auc:{test_auc}, test_f1:{test_f1}')
 
 
-def train_step(train_queue, model, criterion, optimizer, scheduler, gpu_id=0):
+def train_step(train_queue, model, criterion, optimizer, model_type):
     objs = AvgrageMeter()
     preds, targets = [], []
     model.train()
-    batch_size = 512
     device = 'cuda'
 
     for step, (input, target) in tqdm.tqdm(enumerate(train_queue)):
@@ -208,10 +197,17 @@ def train_step(train_queue, model, criterion, optimizer, scheduler, gpu_id=0):
         target = target.to(device)
         target = target.type(torch.float32)
         optimizer.zero_grad()
-        logits = model(input)
-        preds.append(logits.view(-1).detach()) # [batch, time] -> [-1]
+        
+        if model_type != 'STA':
+            logits = model(input)
+            loss = criterion(logits, target)
+        
+        elif model_type == 'STA':
+            logits, pipe, attn = model(input)
+            loss = criterion(logits, target) + criterion(pipe, target) + 0.1*criterion(attn, target)
+        
+        preds.append(logits.view(-1).detach()) 
         targets.append(target.view(-1).detach())
-        loss = criterion(logits, target)
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         optimizer.step()
@@ -225,7 +221,7 @@ def train_step(train_queue, model, criterion, optimizer, scheduler, gpu_id=0):
     return auc, objs.avg
 
 
-def valid_step(valid_queue, model, criterion, dataset, gpu_id=0):
+def valid_step(valid_queue, model, criterion, dataset, model_type):
     objs = AvgrageMeter()
     preds, targets = [], []
     model.eval()
@@ -239,10 +235,12 @@ def valid_step(valid_queue, model, criterion, dataset, gpu_id=0):
                     input = input.to(device)
                     target = target.to(device)
                     target = target.type(torch.float32)
-                    logits = model(input)
-                    loss = criterion(logits, target)
-                    # preds.append(logits.view(-1).detach()) # [batch, time] -> [-1]
-                    # targets.append(target.view(-1).detach())
+                    if model_type != 'STA':
+                        logits = model(input)
+                        loss = criterion(logits, target)
+                    elif model_type == 'STA':
+                        logits, pipe, attn = model(input)
+                        loss = criterion(logits, target) + criterion(pipe, target) + 0.1*criterion(attn, target)
                     n = input.size(0)
                     objs.update(loss.item(), n)
                     preds.append(logits.view(-1).detach())
@@ -254,10 +252,14 @@ def valid_step(valid_queue, model, criterion, dataset, gpu_id=0):
             input = input.to(device)
             target = target.to(device)
             target = target.type(torch.float32)
-            logits = model(input)
-            loss = criterion(logits, target)
-            # preds.append(logits.view(-1).detach()) # [batch, time] -> [-1]
-            # targets.append(target.view(-1).detach())
+            if model_type != 'STA':
+                logits = model(input)
+                loss = criterion(logits, target)
+            
+            elif model_type == 'STA':
+                logits, pipe, attn = model(input)
+                loss = criterion(logits, target) + criterion(pipe, target) + 0.1*criterion(attn, target)
+            
             n = input.size(0)
             objs.update(loss.item(), n)
             preds.append(logits.view(-1).detach())
@@ -285,24 +287,16 @@ def test_step(valid_queue, model, criterion, model_type, window):
             target = target.to(device)
             target = target.type(torch.float32)
 
-            if model_type != 'Marblenet':
-                logits = bdnn_ensemble_prediction(model, input, window, batch_size)
-                # logits = marble_all_prediction_Search(model, input, batch_size)
-
-            if model_type == 'Marblenet':
-                logits = marble_all_prediction(model, input, batch_size)
-                
+            logits = bdnn_ensemble_prediction(model, input, window, batch_size, model_type)
             n = input.size(0)
             preds.append(logits.view(-1).detach())
             targets.append(target.view(-1).detach())
-            # if step % REPORT_FREQ == 0:
-            #     logging.info(f'valid {step:03d} {objs.avg} {auc.compute()}')
-            preds = torch.cat(preds, dim=0).cpu()
-            targets = torch.cat(targets, dim=0).cpu()
-            auc = roc_auc_score(torch.round(targets), preds)
-            f1 = f1_score(torch.round(targets), (preds >= 0.5)*1)
-            preds, targets = [], []
-            print("AUC is", auc, "F1 is", f1)
+    preds = torch.cat(preds, dim=0).cpu()
+    targets = torch.cat(targets, dim=0).cpu()
+    auc = roc_auc_score(torch.round(targets), preds)
+    f1 = f1_score(torch.round(targets), (preds >= 0.5)*1)
+    preds, targets = [], []
+    print("AUC is", auc, "F1 is", f1)
     
     del preds, targets
     return auc, f1, objs.avg
@@ -403,10 +397,9 @@ class TIMIT_Dataset_marble(torch.utils.data.Dataset):
         return audio
 
 
-def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, gpu_id=0):
+def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, model_type):
     spectrogram = torch.squeeze(spectrogram, 0)
     assert spectrogram.dim() == 3 # [chan, time, freq]
-    device = get_device(gpu_id)
     model.eval()
     # sequence to slices
     window = torch.tensor(window)
@@ -425,8 +418,11 @@ def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, gpu_id=0):
     for i in range(int(np.ceil(slices.size(0) / batch_size))):
         inputs = slices[i*batch_size:(i+1)*batch_size]
         with torch.no_grad():
-            inputs = inputs.to(device)
-            prediction = model(inputs)
+            inputs = inputs.cuda()
+            if model_type != 'STA':
+                prediction = model(inputs)
+            elif model_type == 'STA':
+                prediction, _, _ = model(inputs)
             if len(prediction.shape) != 2:
                 prediction = torch.unsqueeze(prediction, 0)
             predictions.append(prediction) # appending only preds
@@ -448,53 +444,6 @@ def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, gpu_id=0):
             outputs[w:-win_width+w] += predictions[:, i]
             total_counts[w:-win_width+w] += 1
     return outputs / (total_counts + 1e-8)
-
-
-def marble_all_prediction(model, spectrogram, batch_size, gpu_id=0):
-    spectrogram = torch.squeeze(spectrogram) # F * T
-    spectrogram = torch.transpose(spectrogram, 0, 1) #  T * F
-    model.eval()
-    outputs = np.zeros(spectrogram.size(0))
-    pad_length = 64 - (spectrogram.size(0) % 64) 
-    pad = torch.zeros(pad_length, 64).cuda()
-    spectrogram = torch.cat([spectrogram, pad], dim=0)
-    inputs = spectrogram.cuda()
-    inputs_list = []
-    for i in range(spectrogram.size(0) // 8 - 7):
-        inputs_list.append(torch.transpose(inputs[8*i: 8*i + 64,:], 0, 1))
-    inputs_list = torch.stack(inputs_list)
-    outputs = model(inputs_list)
-    total_output = torch.zeros(spectrogram.size(0)).cuda()
-    outputs_num = torch.zeros(spectrogram.size(0)).cuda()
-    for i in range(spectrogram.shape[0] // 8 - 7):
-        total_output[8*i: 8*i + 64] += outputs[i]
-        outputs_num[8*i : 8*i + 64] += 1
-    outputs = (total_output/outputs_num)[:spectrogram.size(0) - pad_length]
-
-    return outputs
-
-def marble_all_prediction_Search(model, spectrogram, batch_size, gpu_id=0):
-    spectrogram = torch.squeeze(spectrogram)
-    model.eval()
-    outputs = np.zeros(spectrogram.size(0))
-    pad_length = 64 - (spectrogram.size(0) % 64) 
-    pad = torch.zeros(pad_length, 64).cuda()
-    spectrogram = torch.cat([spectrogram, pad], dim=0)
-    inputs = spectrogram.cuda()
-    inputs_list = []
-    for i in range(spectrogram.size(0) // 8 - 7):
-        inputs_list.append(torch.unsqueeze(inputs[8*i: 8*i + 64,:], 0))
-    inputs_list = torch.stack(inputs_list)
-    outputs = model(inputs_list)
-    total_output = torch.zeros(spectrogram.size(0)).cuda()
-    outputs_num = torch.zeros(spectrogram.size(0)).cuda()
-    for i in range(spectrogram.shape[0] // 8 - 7):
-        total_output[8*i: 8*i + 64] += outputs[i]
-        outputs_num[8*i : 8*i + 64] += 1
-    outputs = (total_output/outputs_num)[:spectrogram.size(0) - pad_length]
-
-    return outputs
-
 
 if __name__ == '__main__':
     import argparse
@@ -569,41 +518,41 @@ if __name__ == '__main__':
     AVA_TEST = 'a,/data2/AVA_Test'
 
     if args.mode == 'train' and args.dataset == 'CV':
-        t = MarbleNetTrainer(CV_TRAIN, args.save_path,
+        t = Trainer(CV_TRAIN, args.save_path,
                             dataset=args.dataset, epochs=50, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
                             mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
 
     elif args.mode == 'train' and args.dataset == 'TIMIT':
-        t = MarbleNetTrainer(TIMIT_TRAIN, args.save_path,
+        t = Trainer(TIMIT_TRAIN, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
                             mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
 
     elif args.mode == 'test' and args.test_dataset == 'CV':
-        t = MarbleNetTrainer(CV_TEST, args.save_path,
+        t = Trainer(CV_TEST, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
                             mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
  
     elif args.mode == 'test' and args.test_dataset == 'TIMIT':
-        t = MarbleNetTrainer(TIMIT_TEST, args.save_path,
+        t = Trainer(TIMIT_TEST, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
                             mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
 
     elif args.mode == 'test' and args.test_dataset == 'AVA':
-        t = MarbleNetTrainer(AVA_TEST, args.save_path,
+        t = Trainer(AVA_TEST, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
                             mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
     if args.mode =='train':
         t.train()
     else:
-        t = MarbleNetTrainer(TIMIT_TEST, args.save_path,
+        t = Trainer(TIMIT_TEST, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
                             mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'TIMIT', n_mels=args.n_mels)
         t.test()
-        t = MarbleNetTrainer(CV_TEST, args.save_path,
+        t = Trainer(CV_TEST, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
                             mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'CV', n_mels=args.n_mels)
         t.test()
-        t = MarbleNetTrainer(AVA_TEST, args.save_path,
+        t = Trainer(AVA_TEST, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
                             mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'AVA', n_mels=args.n_mels)
         t.test()
