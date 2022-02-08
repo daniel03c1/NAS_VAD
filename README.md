@@ -74,34 +74,31 @@ If you wish to increase the number of workers or if your machine cannot handle t
 
 # 2. How to train model
 
-1. you need synthesized spectrogram and label to train model. you should prepare TRAIN, VALID, TEST folder. And there should be spectrogram '*_spec.npy' shape of [1, 201, n_frames] and corresponding framewise label '*.npy' in same folder. (you can refer synthesize_audio.py to synthesize audio)
+1. you need a synthesized spectrogram and label to train a model. you should prepare TRAIN, VALID, TEST folder. And place [1, 201, n_frames] shaped spectrogram  "\*_spec.npy" . And corresponding framewise label "\*.npy" in same folder. (you can refer synthesize_audio.py to synthesize audio)
 
-2. There are two types of trainer, one for BDNN like model (trainer.py) and one for Spectro-Temporal Attention(trainer_st_attention.py)
+2. you should change the path of train and validation folder by changing CV_TRAIN, TIMIT_TRAIN at trainer.py (format should be 'Train_path,Valid_path') 
 
-3. you should change the path of train and validation foler by changing CV_TRAIN, TIMIT_TRAIN at trainer.py or trainer_st_attention.py (format should be 'Train_path,Valid_path') 
-
-To run baseline model execute 
+3. To train baseline model, execute following line. 
 
 ```bash
-python trainer.py --model 'Search2D' --found 'TIMIT' --mode 'train' --dataset 'TIMIT' --n_mels 80' --save_path "./saved_model"
+python trainer.py --model 'Darts2D' --found 'TIMIT' --mode 'train' --dataset 'TIMIT' --n_mels 80' --save_path "./saved_model"
 ```
 
-- "--model" : type of model you want to use, and if model is from NAS you have to set genotypes at trainer and use '--found' option to specify your genotypes. (You can refer main part of tainer.py file to set genotypes). BDNN, ACAM, Self Attentive VAD is available.
-- "--dataset" : Dataset to be used for training 
-- "--n_mels" : The number of mel you want to use(default : 80)
-- "--save_path" : path where model will be stored. Just enter the folder name. It will save model automatically.
+- "--model" : Types of the model you want to use, and if the model is from NAS you have to set genotypes at 'get_model' at trainer.py. And use '--found' option to specify your genotypes. (You can refer main part of tainer.py file to set genotypes). BDNN, ACAM, Self Attentive VAD, Spectro-Temporal Attention is additionally available.
+- "--dataset" : Dataset to be used for training.
+- "--n_mels" : The number of mel you want to use. (default : 64)
+- "--save_path" : A path where a model will be stored. Just enter the folder name. It will save a model automatically.
 
 # 3. How to test model
 
-
-To test baseline model you should change the path of train and validation foler by changing CV_TEST, TIMIT_TEST at trainer.py or trainer_st_attention.py (format should be '*,Test_path') 
+To test baseline model, you should change the path of train and validation foler by changing CV_TEST, TIMIT_TEST at trainer.py (format should be "*,Test_path") 
 
 And To test model, execute 
 ```bash
-python trainer.py --model 'Search2D' --found 'TIMIT' --mode 'train' --dataset 'TIMIT' --test_dataset 'TIMIT' --n_mels 80' --save_path "./saved_model"
+python trainer.py --model 'Darts2D' --found 'TIMIT' --mode 'test' --dataset 'TIMIT' --test_dataset 'TIMIT' --n_mels 80' --save_path "./saved_model"
 ```
-- "--model" : type of model you want to use, and if model is from NAS you have to set genotypes at trainer and use '--found' option to specify your genotypes. (You can refer main part of tainer.py file to set genotypes).
-- "--dataset" : which dataset used for train  
-- "--n_mels" : Determine number of mel you want to use
-- "--save_path" : path where models are saved. Just enter the folder name. It will automatically load the model according to the model name and dataset used for training.
-- "--test_dataset" : which dataset you want to test
+- "--model" : Types of the model you want to use, and if the model is from NAS you have to set genotypes at 'get_model' at trainer.py. And use '--found' option to specify your genotypes. (You can refer main part of tainer.py file to set genotypes). BDNN, ACAM, Self Attentive VAD, Spectro-Temporal Attention is additionally available.
+- "--dataset" : Dataset to be used for training.  
+- "--n_mels" : The number of mel you want to use. (default : 64)
+- "--save_path" : A path where a model will be stored. Just enter the folder name. It will save a model automatically.
+- "--test_dataset" : Dataset to be used for testing.
