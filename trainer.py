@@ -34,6 +34,7 @@ class Trainer:
                  data_path,
                  model_save_path: str,
                  model_type='Marblenet',
+                 model=None,
                  mode='train',
                  dataset: str = 'cv7',
                  epochs=50,
@@ -47,60 +48,14 @@ class Trainer:
         # if not torch.cuda.is_available():
         #     raise ValueError("No GPU is available!")
         self.mode = mode
+        self.model = model
         self.model_type = model_type
         self.epochs = epochs
-        self.gpu_id = gpu_id
         self.dataset_name = dataset
-        self.train_portion = 0.8
         self.save_path = model_save_path
         self.window = window
         self.found = found
         self.test_data = test_dataset
-        # Prepare the model for training
-        if self.mode == 'train':
-            if self.model_type == 'STA':
-                 self.model = LeeVAD(n_mels).cuda()
-            elif self.model_type =='Search2D':
-                self.model = NetworkVADOriginal(16, 8, genotype, use_second=False).cuda()
-            elif self.model_type == 'SL_model':
-                self.model = SelfAttentiveVAD(n_mels).cuda()
-            elif self.model_type == 'ACAM':
-                self.model = ACAM(n_mels).cuda()
-            elif self.model_type == 'BDNN':
-                self.model = bDNN().cuda()
-            elif self.model_type in 'New1D2D':
-                self.model = NetworkVADv2(40, 4, genotype, True, 0, False, len(window), n_mels).cuda()
-
-        else:
-            path_list = glob(f'{self.save_path}/*_{self.model_type}_{self.dataset_name}_{self.found}.pth')
-            path_num = sorted([int(path.split('/')[-1].split('_')[0]) for path in path_list])
-            PATH = os.path.join(self.save_path, f'{path_num[-1]}_{self.model_type}_{self.dataset_name}_{self.found}.pth')
-            if self.model_type == 'STA':
-                self.model = LeeVAD(n_mels).cuda()
-                self.model.load_state_dict(torch.load(PATH))
-                print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
-
-            elif self.model_type =='Search2D':
-                self.model = NetworkVADOriginal(16, 8, genotype, use_second=False).cuda()
-                self.model.load_state_dict(torch.load(PATH))
-                print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
-
-            elif self.model_type == 'SL_model':
-                self.model = SelfAttentiveVAD(n_mels).cuda()
-                self.model.load_state_dict(torch.load(PATH))
-                print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
-            elif self.model_type == 'ACAM':
-                self.model = ACAM(n_mels).cuda()
-                self.model.load_state_dict(torch.load(PATH))
-                print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
-            elif self.model_type == 'BDNN':
-                self.model = bDNN().cuda()
-                self.model.load_state_dict(torch.load(PATH))
-                print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
-            elif self.model_type == 'New1D2D':
-                self.model = NetworkVADv2(40, 4, genotype, True, 0, False, len(window), n_mels).cuda()
-                self.model.load_state_dict(torch.load(PATH))
-                print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
 
         min_size = 700      
         train_path, valid_path = self.data_path.split(',')
@@ -111,7 +66,7 @@ class Trainer:
                 and os.stat(os.path.join(train_path, f)).st_size > min_size])
             random.shuffle(train_label_files)
             train_files = [item.replace('.npy', '_spec.npy') for item in train_label_files]
-            train_dataset = TIMIT_Dataset_marble(train_files, train_label_files,
+            train_dataset = VAD_Dataset(train_files, train_label_files,
                              n_fft=400, n_mels=n_mels, sample_rate=16000, mode=self.mode, model_type=self.model_type)
             print(len(train_label_files))
         valid_label_files = sorted([ os.path.join(valid_path, f)
@@ -120,10 +75,10 @@ class Trainer:
 
         valid_files = [item.replace('.npy', '_spec.npy') for item in valid_label_files]
         if self.mode == 'train':
-            valid_dataset = TIMIT_Dataset_marble(valid_files, valid_label_files, 
+            valid_dataset = VAD_Dataset(valid_files, valid_label_files, 
                             n_fft=400, n_mels=n_mels, sample_rate=16000, model_type=self.model_type, mode='valid')
         else:
-            valid_dataset = TIMIT_Dataset_marble(valid_files, valid_label_files, 
+            valid_dataset = VAD_Dataset(valid_files, valid_label_files, 
                             n_fft=400, n_mels=n_mels, sample_rate=16000, model_type=self.model_type, mode='test')
         if self.mode =='train':
             self.train_data = train_dataset
@@ -308,7 +263,7 @@ def get_device(gpu_id):
     return torch.device('cpu')
 
 
-class TIMIT_Dataset_marble(torch.utils.data.Dataset):
+class VAD_Dataset(torch.utils.data.Dataset):
     def __init__(self, audio_files, label_files, n_fft=512, n_mels=80, sample_rate=16000, mode='train',
                   snr_low=-10, snr_high=10, train_portion=1, window=[-19, -9, -1, 0, 1, 9, 19], model_type='Marblenet'):
         self.audio_files = audio_files
@@ -445,6 +400,78 @@ def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, model_type)
             total_counts[w:-win_width+w] += 1
     return outputs / (total_counts + 1e-8)
 
+def get_model(model_type, found, dataset_name, mode, n_mels, save_path):
+    if model_type == 'Darts2D' and found == 'CV':
+        genotype = Genotype(normal=[('skip_connect_original', 0), ('skip_connect_original', 1),
+                                    ('max_pool_3x3', 1), ('avg_pool_3x3', 0),
+                                    ('sep_conv_3x3_original', 0), ('sep_conv_5x5_original', 1),
+                                    ('max_pool_3x3', 1), ('skip_connect_original', 2)],
+                            normal_concat=range(2, 6),
+                            reduce=[('skip_connect_original', 0), ('skip_connect_original', 1),
+                                    ('max_pool_3x3', 1), ('avg_pool_3x3', 0),
+                                    ('sep_conv_3x3_original', 0), ('sep_conv_5x5_original', 1),
+                                    ('max_pool_3x3', 1), ('skip_connect_original', 2)],
+                            reduce_concat=range(2, 6))
+
+    if model_type == 'Darts2D' and found == 'TIMIT':
+        genotype = Genotype(normal=[('zero_original', 0), ('skip_connect_original', 1),
+                                    ('dil_conv_3x3', 0), ('max_pool_3x3', 1),
+                                    ('skip_connect_original', 1), ('avg_pool_3x3', 0),
+                                    ('zero_original', 2), ('sep_conv_3x3_original', 4)],
+                            normal_concat=range(2, 6),
+                            reduce=[('zero_original', 0), ('skip_connect_original', 1),
+                                    ('dil_conv_3x3', 0), ('max_pool_3x3', 1),
+                                    ('skip_connect_original', 1), ('avg_pool_3x3', 0),
+                                    ('zero_original', 2), ('sep_conv_3x3_original', 4)],
+                            reduce_concat=range(2, 6))
+
+    if model_type == 'NewSearch' and found == 'CV':
+        genotype = Genotype(normal=[('MBConv_3x3_x2', 1),('MBConv_5x5_x4', 0),
+                                    ('MBConv_5x5_x4', 1 ), ('zero', 2),
+                                    ('MBConv_3x3_x4', 1), ('skip_connect', 3),
+                                    ('zero', 3), ('sep_conv_5x5', 2)],
+                            normal_concat=range(2, 6), 
+                            reduce=[('MBConv_5x5_x2', 0), ('MBConv_5x5_x4', 1),
+                                    ('FFN2D_0.5', 2), ('MBConv_5x5_x2', 0),
+                                    ('FFN2D_1', 1), ('MBConv_5x5_x4', 0),
+                                    ('zero', 0), ('MHA2D_4', 4)],
+                            reduce_concat=range(2, 6)) 
+    
+    if model_type == 'NewSearch' and found == 'TIMIT':
+        genotype = Genotype(normal=[('SE_0.25', 0), ('MBConv_3x3_x2', 1),
+                                    ('zero', 2), ('SE_0.25', 0),
+                                    ('MBConv_5x5_x4', 3), ('MBConv_5x5_x4', 2),
+                                    ('sep_conv_5x5', 2), ('MBConv_5x5_x2', 1)],
+                            normal_concat=range(2, 6),
+                            reduce=[('MBConv_3x3_x4', 1), ('MBConv_3x3_x4', 0),
+                                    ('MBConv_5x5_x2', 2), ('MHA2D_2', 0),
+                                    ('MHA2D_4', 2), ('FFN2D_1', 1),
+                                    ('GLU2D_5', 4), ('MBConv_5x5_x2', 2)],
+                            reduce_concat=range(2, 6))
+    
+    if model_type == 'STA':
+        model = LeeVAD(n_mels).cuda()
+    elif model_type =='Darts2D':
+        model = NetworkVADOriginal(16, 8, genotype, use_second=False).cuda()
+    elif model_type == 'SL_model':
+        model = SelfAttentiveVAD(n_mels).cuda()
+    elif model_type == 'ACAM':
+        model = ACAM(n_mels).cuda()
+    elif model_type == 'BDNN':
+        model = bDNN().cuda()
+    elif model_type in 'NewSearch':
+        model = NetworkVADv2(40, 4, genotype, True, 0, False, len(window), n_mels).cuda()    
+    
+    if mode == 'test':
+        path_list = glob(f'{save_path}/*_{model_type}_{dataset_name}_{found}.pth')
+        path_num = sorted([int(path.split('/')[-1].split('_')[0]) for path in path_list])
+        PATH = os.path.join(save_path, f'{path_num[-1]}_{model_type}_{dataset_name}_{found}.pth')
+        model.load_state_dict(torch.load(PATH))
+        print(sum(p.numel() for p in model.parameters() if p.requires_grad))
+    
+    return model
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Process some integers.')
@@ -460,99 +487,37 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    ## CV 2D
-    if args.model == 'Search2D' and args.found == 'CV':
-        genotype = Genotype(normal=[('skip_connect_original', 0), ('skip_connect_original', 1),
-                                    ('max_pool_3x3', 1), ('avg_pool_3x3', 0),
-                                    ('sep_conv_3x3_original', 0), ('sep_conv_5x5_original', 1),
-                                    ('max_pool_3x3', 1), ('skip_connect_original', 2)],
-                            normal_concat=range(2, 6),
-                            reduce=[('skip_connect_original', 0), ('skip_connect_original', 1),
-                                    ('max_pool_3x3', 1), ('avg_pool_3x3', 0),
-                                    ('sep_conv_3x3_original', 0), ('sep_conv_5x5_original', 1),
-                                    ('max_pool_3x3', 1), ('skip_connect_original', 2)],
-                            reduce_concat=range(2, 6))
-
-    # TIMIT only 2D (new_timit...)
-    if args.model == 'Search2D' and args.found == 'TIMIT':
-        genotype = Genotype(normal=[('zero_original', 0), ('skip_connect_original', 1),
-                                    ('dil_conv_3x3', 0), ('max_pool_3x3', 1),
-                                    ('skip_connect_original', 1), ('avg_pool_3x3', 0),
-                                    ('zero_original', 2), ('sep_conv_3x3_original', 4)],
-                            normal_concat=range(2, 6),
-                            reduce=[('zero_original', 0), ('skip_connect_original', 1),
-                                    ('dil_conv_3x3', 0), ('max_pool_3x3', 1),
-                                    ('skip_connect_original', 1), ('avg_pool_3x3', 0),
-                                    ('zero_original', 2), ('sep_conv_3x3_original', 4)],
-                            reduce_concat=range(2, 6))
-
-    if args.model == 'New1D2D' and args.found == 'CV':
-        genotype = Genotype(normal=[('MBConv_3x3_x2', 1),('MBConv_5x5_x4', 0),
-            ('MBConv_5x5_x4', 1 ), ('zero', 2),
-            ('MBConv_3x3_x4', 1), ('skip_connect', 3),
-            ('zero', 3), ('sep_conv_5x5', 2)],
-            normal_concat=range(2, 6), 
-            reduce=[('MBConv_5x5_x2', 0), ('MBConv_5x5_x4', 1),
-            ('FFN2D_0.5', 2), ('MBConv_5x5_x2', 0),
-            ('FFN2D_1', 1), ('MBConv_5x5_x4', 0),
-            ('zero', 0), ('MHA2D_4', 4)],
-            reduce_concat=range(2, 6)) 
-    
-    if args.model == 'New1D2D' and args.found == 'TIMIT':
-        # final 1st model
-        genotype = Genotype(normal=[('SE_0.25', 0), ('MBConv_3x3_x2', 1),
-                                    ('zero', 2), ('SE_0.25', 0),
-                                    ('MBConv_5x5_x4', 3), ('MBConv_5x5_x4', 2),
-                                    ('sep_conv_5x5', 2), ('MBConv_5x5_x2', 1)],
-                            normal_concat=range(2, 6),
-                            reduce=[('MBConv_3x3_x4', 1), ('MBConv_3x3_x4', 0),
-                                    ('MBConv_5x5_x2', 2), ('MHA2D_2', 0),
-                                    ('MHA2D_4', 2), ('FFN2D_1', 1),
-                                    ('GLU2D_5', 4), ('MBConv_5x5_x2', 2)],
-                            reduce_concat=range(2, 6))
-
     CV_TRAIN = '/data2/CV_Audioset_Train/audio,/data2/CV_Audioset_Valid/audio'
     CV_TEST = '/data2/CV_Audioset_Train/audio,/data2/CV_Audioset_Test/audio'
     TIMIT_TRAIN = '/data2/TIMIT_SoundIdea_Train/audio,/data2/TIMIT_SoundIdea_Valid/audio'
     TIMIT_TEST = '/data2/TIMIT_SoundIdea_Train/audio,/data2/TIMIT_SoundIdea_Test/audio'
     AVA_TEST = 'a,/data2/AVA_Test'
 
+    model = get_model(args.model, args.found, args.dataset, args.mode, args.n_mels, args.save_path)
+    
     if args.mode == 'train' and args.dataset == 'CV':
         t = Trainer(CV_TRAIN, args.save_path,
                             dataset=args.dataset, epochs=50, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
-                            mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
+                            mode=args.mode, model_type=args.model, model=model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
 
     elif args.mode == 'train' and args.dataset == 'TIMIT':
         t = Trainer(TIMIT_TRAIN, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
-                            mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
+                            mode=args.mode, model_type=args.model, model=model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
 
-    elif args.mode == 'test' and args.test_dataset == 'CV':
-        t = Trainer(CV_TEST, args.save_path,
-                            dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
-                            mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
- 
-    elif args.mode == 'test' and args.test_dataset == 'TIMIT':
-        t = Trainer(TIMIT_TEST, args.save_path,
-                            dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
-                            mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
-
-    elif args.mode == 'test' and args.test_dataset == 'AVA':
-        t = Trainer(AVA_TEST, args.save_path,
-                            dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
-                            mode=args.mode, model_type=args.model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
     if args.mode =='train':
         t.train()
+    
     else:
         t = Trainer(TIMIT_TEST, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
-                            mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'TIMIT', n_mels=args.n_mels)
+                            mode=args.mode, model_type=args.model, model=model, found=args.found, test_dataset = 'TIMIT', n_mels=args.n_mels)
         t.test()
         t = Trainer(CV_TEST, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
-                            mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'CV', n_mels=args.n_mels)
+                            mode=args.mode, model_type=args.model, model=model, found=args.found, test_dataset = 'CV', n_mels=args.n_mels)
         t.test()
         t = Trainer(AVA_TEST, args.save_path,
                             dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
-                            mode=args.mode, model_type=args.model, found=args.found, test_dataset = 'AVA', n_mels=args.n_mels)
+                            mode=args.mode, model_type=args.model, model=model, found=args.found, test_dataset = 'AVA', n_mels=args.n_mels)
         t.test()

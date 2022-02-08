@@ -70,7 +70,7 @@ class NetworkVADOriginal(nn.Module):
                  height=64, width=64):
         super(NetworkVADOriginal, self).__init__()
         self._layers = layers
-        
+        self.drop_path_prob = drop_path_prob 
         stem_multiplier = 3
         C_curr = stem_multiplier*C
         # self.stem = nn.Sequential(
@@ -193,7 +193,7 @@ class NetworkVADv1(nn.Module):
                  drop_path_prob=0., time_average=False):
         super(NetworkVADv1, self).__init__()
         self._layers = layers
-
+        self.drop_path_prob = drop_path_prob
         stem_multiplier = 3
         C_curr = stem_multiplier*C
         self.stem = nn.Sequential(
