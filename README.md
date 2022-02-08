@@ -74,7 +74,7 @@ If you wish to increase the number of workers or if your machine cannot handle t
 
 # 2. How to train model
 
-1. you need a synthesized spectrogram and label to train a model. you should prepare TRAIN, VALID, TEST folder. And place [1, 201, n_frames] shaped spectrogram  "\*_spec.npy" . And corresponding framewise label "\*.npy" in same folder. (you can refer synthesize_audio.py to synthesize audio)
+1. you need a synthesized spectrogram and label to train a model. you should prepare TRAIN, VALID, TEST folder. And place [1, 201, n_frames] shaped spectrogram  "\*_spec.npy" . And place corresponding framewise label "\*.npy" in same folder. (you can refer synthesize_audio.py to synthesize audio)
 
 2. you should change the path of train and validation folder by changing CV_TRAIN, TIMIT_TRAIN at trainer.py (format should be 'Train_path,Valid_path') 
 
