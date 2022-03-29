@@ -99,7 +99,7 @@ class GraphExpectedImprovement(BaseAcquisition):
         # print(eis)
         self.iters += 1
         if return_distinct:
-            eis = np.array([self.eval(c) for c in candidates])
+            eis = np.array([self.eval(c).detach() for c in candidates])
             eis_, unique_idx = np.unique(eis, return_index=True)
             try:
                 i = np.argpartition(eis_, -top_n)[-top_n:]
