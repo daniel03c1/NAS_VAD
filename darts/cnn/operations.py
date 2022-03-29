@@ -51,6 +51,10 @@ OPS = {
 
     'MHA2D_2': lambda C, height, width: MHA2D(C, 2, height, width),
     'MHA2D_4': lambda C, height, width: MHA2D(C, 4, height, width),
+    'MHA2D_T_2': lambda C, height, width: MHA2D(C, 2, height, width, only_time_attn=True),
+    'MHA2D_T_4': lambda C, height, width: MHA2D(C, 4, height, width, only_time_attn=True),
+    'MHA2D_F_2': lambda C, height, width: MHA2D(C, 2, height, width, only_freq_attn=True),
+    'MHA2D_F_4': lambda C, height, width: MHA2D(C, 4, height, width, only_freq_attn=True),
     'FFN2D_0.5': lambda C, height, width: FeedForwardNetwork2D(C, 0.5),
     'FFN2D_1': lambda C, height, width: FeedForwardNetwork2D(C, 1),
     'FFN2D_2': lambda C, height, width: FeedForwardNetwork2D(C, 2),
@@ -187,7 +191,7 @@ class SEModule(nn.Module):
 class MHA2D(nn.Module):
     def __init__(self, C, num_heads, height=None, width=None,
                  only_time_attn=False, only_freq_attn=False,
-                 activation=nn.GELU):
+                 use_emb=True, activation=nn.GELU):
         super(MHA2D, self).__init__()
         self.preact = nn.Sequential(
             nn.BatchNorm2d(C),
@@ -202,12 +206,13 @@ class MHA2D(nn.Module):
 
         self.only_time_attn = only_time_attn
         self.only_freq_attn = only_freq_attn
+        self.use_emb = use_emb
 
         # relative pos embedding
         self.height = height if not only_freq_attn else 1
         self.width = width if not only_time_attn else 1
-        self.use_emb = height is not None and width is not None
         if self.use_emb:
+            assert height is not None and width is not None
             stddev = self.key_dim ** -0.5
             self.pos_emb_h = nn.Parameter(torch.rand(self.height*2-1)*stddev,
                                           requires_grad=True)

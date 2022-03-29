@@ -357,7 +357,7 @@ class NetworkVADv2(nn.Module):
         self.cells = nn.ModuleList()
         reduction_prev = False
 
-        self.reduction_list = [layers//3, 2*layers//3]
+        self.reduction_list = [layers//2]
         self.use_second_type_list = []
         if use_second:
             self.reduction_list = list(range(layers))
@@ -367,6 +367,7 @@ class NetworkVADv2(nn.Module):
             reduction = i in self.reduction_list
             height = int(height / (1 + reduction*time_average))
             width = int(width / (1 + reduction))
+            C_curr = int(C_curr * (1 + reduction))
 
             cell = Cell(genotype, C_prev_prev, C_prev, C_curr,
                         reduction, reduction_prev,
@@ -384,6 +385,7 @@ class NetworkVADv2(nn.Module):
         self.time_average = time_average # for Samplewise prediction
 
     def forward(self, inputs):
+        # [batch, chan, time, freq]
         s0 = s1 = self.stem(inputs)
 
         for i, cell in enumerate(self.cells):
