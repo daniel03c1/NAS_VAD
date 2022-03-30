@@ -1,52 +1,44 @@
-import logging
-import os
-import time
-
 import numpy as np
-import pandas as pd
+import os
+import random
+import sys 
+import time
 import torch
 import torch.nn as nn
 import torchaudio
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import tqdm
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics import f1_score
-# import darts.cnn.utils as darts_utils
-import sys 
-sys.path.append('../')
+import warnings
 from glob import glob
+from sklearn.metrics import f1_score
+from sklearn.metrics import roc_auc_score
+sys.path.append('../')
+warnings.filterwarnings('ignore')
+
+from darts.cnn.acam import *
+from darts.cnn.genotypes import Genotype
 from darts.cnn.model import *
 from darts.cnn.sl_model import *
-from darts.cnn.acam import *
-
 from darts.cnn.utils import count_parameters_in_MB, save, AvgrageMeter, accuracy, Cutout
 from darts.darts_config import *
 from misc.random_string import random_generator
-from darts.cnn.genotypes import Genotype
-import re
-import warnings
-import random
-warnings.filterwarnings('ignore')
+
 
 class Trainer:
     def __init__(self,
                  data_path,
                  model_save_path: str,
-                 model_type='Marblenet',
-                 model=None,
-                 mode='train',
                  dataset: str = 'cv7',
                  epochs=50,
-                 gpu_id=-1,
-                 window=[-19, -9, -1, 0, 1, 9, 19],
-                 found = 'CV',
+                 mode='train',
+                 model=None,
+                 model_type='Marblenet',
                  test_dataset = 'None',
-                 n_mels=64):
+                 window=[-19, -9, -1, 0, 1, 9, 19],
+                 n_mels=80):
         self.data_path = data_path
         self.batch_size = 128
-        # if not torch.cuda.is_available():
-        #     raise ValueError("No GPU is available!")
         self.mode = mode
         self.model = model
         self.model_type = model_type
@@ -54,7 +46,6 @@ class Trainer:
         self.dataset_name = dataset
         self.save_path = model_save_path
         self.window = window
-        self.found = found
         self.test_data = test_dataset
 
         min_size = 700      
@@ -98,36 +89,36 @@ class Trainer:
             self.valid_data, batch_size=self.batch_size,
             pin_memory=False, num_workers=0)
 
-        value_save= []
         early = 0
-        best_valid = 0
-        best_single_valid = 1000000
+        best_single_valid = np.inf # the lower the better
+
         for e in range(self.epochs):
             self.model.drop_path_prob = 0
             start = time.time()
+
             train_auc, train_obj = train_step(
                 train_queue, self.model, criterion, optimizer, self.model_type)
+
             if e == 0:
-                print(sum(p.numel() for p in self.model.parameters() if p.requires_grad))
+                print(f'# params: {sum(p.numel() for p in self.model.parameters())}')
+
             valid_auc, valid_obj, valid_loss = valid_step(
                 valid_queue, self.model, criterion, self.dataset_name, self.model_type)
-            end = time.time()
-            values = [e, scheduler.get_last_lr()[0], train_auc, valid_auc,
-                      end - start]
+
             scheduler.step()
-            value_save.append(valid_auc)
-            single_valid = value_save[-1]
-            if best_single_valid >= valid_obj:
+
+            if best_single_valid > valid_obj:
                 best_single_valid = valid_obj
-                torch.save(self.model.state_dict(), f'{self.save_path}/{e}_{self.model_type}_{self.dataset_name}_{self.found}.pth')
+                torch.save(self.model.state_dict(),
+                           f'{self.save_path}/{e:03d}_{self.model_type}_{self.dataset_name}.pth')
                 early = 0
             else:
                 early += 1
+
             if early == 10:
-                print(f'epoch:{values[0]}, best valid:{best_single_valid}')
+                print(f'epoch:{e+1}, best valid:{best_single_valid}')
                 break
-            print(f'epoch:{values[0]}, lr:{values[1]} train_auc:{values[2]}, valid_auc:{values[3]}, loss:{valid_obj}')
-                                       
+
     def test(self):
         criterion = nn.BCELoss().cuda()
 
@@ -138,7 +129,7 @@ class Trainer:
         start = time.time()
         test_auc, test_f1, test_obj = test_step(
             valid_queue, self.model, criterion, self.model_type, self.window)
-        print(f'Model:{self.model_type} found:{self.found}, train:{self.dataset_name}, test:{self.test_data}, test_auc:{test_auc}, test_f1:{test_f1}')
+        print(f'Model:{self.model_type} train:{self.dataset_name}, test:{self.test_data}, test_auc:{test_auc}, test_f1:{test_f1}')
 
 
 def train_step(train_queue, model, criterion, optimizer, model_type):
@@ -147,26 +138,25 @@ def train_step(train_queue, model, criterion, optimizer, model_type):
     model.train()
     device = 'cuda'
 
-    for step, (input, target) in tqdm.tqdm(enumerate(train_queue)):
-        input = input.to(device)
+    for step, (inputs, target) in tqdm.tqdm(enumerate(train_queue)):
+        inputs = inputs.to(device)
         target = target.to(device)
         target = target.type(torch.float32)
         optimizer.zero_grad()
         
-        if model_type != 'STA':
-            logits = model(input)
-            loss = criterion(logits, target)
-        
-        elif model_type == 'STA':
-            logits, pipe, attn = model(input)
+        if model_type == 'STA':
+            logits, pipe, attn = model(inputs)
             loss = criterion(logits, target) + criterion(pipe, target) + 0.1*criterion(attn, target)
-        
+        else:
+            logits = model(inputs)
+            loss = criterion(logits, target)
+ 
         preds.append(logits.view(-1).detach()) 
         targets.append(target.view(-1).detach())
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         optimizer.step()
-        n = input.size(0)
+        n = inputs.size(0)
         objs.update(loss.item(), n)
 
     preds = torch.cat(preds, dim=0).cpu()
@@ -185,37 +175,36 @@ def valid_step(valid_queue, model, criterion, dataset, model_type):
     device = 'cuda'
     if dataset == 'TIMIT':
         for i in range(4):
-            for step, (input, target) in enumerate(valid_queue):
+            for step, (inputs, target) in enumerate(valid_queue):
                 with torch.no_grad():
-                    input = input.to(device)
+                    inputs = inputs.to(device)
                     target = target.to(device)
                     target = target.type(torch.float32)
                     if model_type != 'STA':
-                        logits = model(input)
+                        logits = model(inputs)
                         loss = criterion(logits, target)
                     elif model_type == 'STA':
-                        logits, pipe, attn = model(input)
+                        logits, pipe, attn = model(inputs)
                         loss = criterion(logits, target) + criterion(pipe, target) + 0.1*criterion(attn, target)
-                    n = input.size(0)
+                    n = inputs.size(0)
                     objs.update(loss.item(), n)
                     preds.append(logits.view(-1).detach())
                     targets.append(target.view(-1).detach())
 
-
-    for step, (input, target) in enumerate(valid_queue):
+    for step, (inputs, target) in enumerate(valid_queue):
         with torch.no_grad():
-            input = input.to(device)
+            inputs = inputs.to(device)
             target = target.to(device)
             target = target.type(torch.float32)
             if model_type != 'STA':
-                logits = model(input)
+                logits = model(inputs)
                 loss = criterion(logits, target)
             
             elif model_type == 'STA':
-                logits, pipe, attn = model(input)
+                logits, pipe, attn = model(inputs)
                 loss = criterion(logits, target) + criterion(pipe, target) + 0.1*criterion(attn, target)
             
-            n = input.size(0)
+            n = inputs.size(0)
             objs.update(loss.item(), n)
             preds.append(logits.view(-1).detach())
             targets.append(target.view(-1).detach())
@@ -236,14 +225,14 @@ def test_step(valid_queue, model, criterion, model_type, window):
     batch_size = 512
     device = 'cuda'
     from tqdm import tqdm
-    for step, (input, target) in tqdm(enumerate(valid_queue)):
+    for step, (inputs, target) in tqdm(enumerate(valid_queue)):
         with torch.no_grad():
-            input = input.to(device)
+            inputs = inputs.to(device)
             target = target.to(device)
             target = target.type(torch.float32)
 
-            logits = bdnn_ensemble_prediction(model, input, window, batch_size, model_type)
-            n = input.size(0)
+            logits = bdnn_ensemble_prediction(model, inputs, window, batch_size, model_type)
+            n = inputs.size(0)
             preds.append(logits.view(-1).detach())
             targets.append(target.view(-1).detach())
     preds = torch.cat(preds, dim=0).cpu()
@@ -251,21 +240,14 @@ def test_step(valid_queue, model, criterion, model_type, window):
     auc = roc_auc_score(torch.round(targets), preds)
     f1 = f1_score(torch.round(targets), (preds >= 0.5)*1)
     preds, targets = [], []
-    print("AUC is", auc, "F1 is", f1)
-    
+ 
     del preds, targets
     return auc, f1, objs.avg
 
 
-def get_device(gpu_id):
-    if torch.cuda.is_available():
-        return torch.device(f'cuda:{gpu_id}')
-    return torch.device('cpu')
-
-
 class VAD_Dataset(torch.utils.data.Dataset):
-    def __init__(self, audio_files, label_files, n_fft=512, n_mels=80, sample_rate=16000, mode='train',
-                  snr_low=-10, snr_high=10, train_portion=1, window=[-19, -9, -1, 0, 1, 9, 19], model_type='Marblenet'):
+    def __init__(self, audio_files, label_files, n_fft=400, n_mels=80, sample_rate=16000, mode='train',
+                 snr_low=-10, snr_high=10, train_portion=1, window=[-19, -9, -1, 0, 1, 9, 19], model_type='Marblenet'):
         self.audio_files = audio_files
         self.label_files = label_files
         self.audio_files = [torch.from_numpy(np.load(item)) for item in self.audio_files]
@@ -285,10 +267,7 @@ class VAD_Dataset(torch.utils.data.Dataset):
         self.snr_high = snr_high
         self.model_type = model_type
         self.mask = torchaudio.transforms.FrequencyMasking(int(0.3*n_mels)).cuda()
-
-    
-    
-    
+ 
     def __len__(self):
         return self.n_voices
 
@@ -337,7 +316,6 @@ class VAD_Dataset(torch.utils.data.Dataset):
             return spec, label
         return spec
 
-
     def synthesize(self, voice, noise):
         # SNR
         weight = torch.pow(
@@ -356,6 +334,7 @@ def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, model_type)
     spectrogram = torch.squeeze(spectrogram, 0)
     assert spectrogram.dim() == 3 # [chan, time, freq]
     model.eval()
+
     # sequence to slices
     window = torch.tensor(window)
     window -= window.min()
@@ -368,6 +347,7 @@ def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, model_type)
             slices.append(spectrogram[:, w:-win_width+w])
     slices = torch.stack(slices, axis=0) # [win_size, chan, time-win_width, freq]
     slices = torch.transpose(slices, 0, 2)
+
     # inference
     predictions = []
     for i in range(int(np.ceil(slices.size(0) / batch_size))):
@@ -386,6 +366,7 @@ def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, model_type)
         predictions = torch.cat(predictions, dim=0)
     except:
         import pdb; pdb.set_trace()
+
     # slices to sequence
     n_frames = spectrogram.size(1) 
     outputs = torch.zeros([n_frames], dtype=torch.float32).cuda()
@@ -400,20 +381,17 @@ def bdnn_ensemble_prediction(model, spectrogram, window, batch_size, model_type)
             total_counts[w:-win_width+w] += 1
     return outputs / (total_counts + 1e-8)
 
-def get_model(model_type, found, dataset_name, mode, n_mels, save_path):
-    if model_type == 'Darts2D' and found == 'CV':
-        genotype = Genotype(normal=[('skip_connect_original', 0), ('skip_connect_original', 1),
-                                    ('max_pool_3x3', 1), ('avg_pool_3x3', 0),
-                                    ('sep_conv_3x3_original', 0), ('sep_conv_5x5_original', 1),
-                                    ('max_pool_3x3', 1), ('skip_connect_original', 2)],
-                            normal_concat=range(2, 6),
-                            reduce=[('skip_connect_original', 0), ('skip_connect_original', 1),
-                                    ('max_pool_3x3', 1), ('avg_pool_3x3', 0),
-                                    ('sep_conv_3x3_original', 0), ('sep_conv_5x5_original', 1),
-                                    ('max_pool_3x3', 1), ('skip_connect_original', 2)],
-                            reduce_concat=range(2, 6))
 
-    if model_type == 'Darts2D' and found == 'TIMIT':
+def get_model(model_type, dataset_name, mode, n_mels, save_path):
+    if model_type == 'BDNN':
+        model = bDNN().cuda()
+    elif model_type == 'ACAM':
+        model = ACAM(n_mels).cuda()
+    elif model_type == 'STA':
+        model = LeeVAD(n_mels).cuda()
+    elif model_type == 'SL_model':
+        model = SelfAttentiveVAD(n_mels).cuda()
+    elif model_type =='Darts2D':
         genotype = Genotype(normal=[('zero_original', 0), ('skip_connect_original', 1),
                                     ('dil_conv_3x3', 0), ('max_pool_3x3', 1),
                                     ('skip_connect_original', 1), ('avg_pool_3x3', 0),
@@ -424,100 +402,75 @@ def get_model(model_type, found, dataset_name, mode, n_mels, save_path):
                                     ('skip_connect_original', 1), ('avg_pool_3x3', 0),
                                     ('zero_original', 2), ('sep_conv_3x3_original', 4)],
                             reduce_concat=range(2, 6))
-
-    if model_type == 'NewSearch' and found == 'CV':
-        genotype = Genotype(normal=[('MBConv_3x3_x2', 1),('MBConv_5x5_x4', 0),
-                                    ('MBConv_5x5_x4', 1 ), ('zero', 2),
-                                    ('MBConv_3x3_x4', 1), ('skip_connect', 3),
-                                    ('zero', 3), ('sep_conv_5x5', 2)],
-                            normal_concat=range(2, 6), 
-                            reduce=[('MBConv_5x5_x2', 0), ('MBConv_5x5_x4', 1),
-                                    ('FFN2D_0.5', 2), ('MBConv_5x5_x2', 0),
-                                    ('FFN2D_1', 1), ('MBConv_5x5_x4', 0),
-                                    ('zero', 0), ('MHA2D_4', 4)],
-                            reduce_concat=range(2, 6)) 
-    
-    if model_type == 'NewSearch' and found == 'TIMIT':
-        genotype = Genotype(normal=[('SE_0.25', 0), ('MBConv_3x3_x2', 1),
-                                    ('zero', 2), ('SE_0.25', 0),
-                                    ('MBConv_5x5_x4', 3), ('MBConv_5x5_x4', 2),
-                                    ('sep_conv_5x5', 2), ('MBConv_5x5_x2', 1)],
-                            normal_concat=range(2, 6),
-                            reduce=[('MBConv_3x3_x4', 1), ('MBConv_3x3_x4', 0),
-                                    ('MBConv_5x5_x2', 2), ('MHA2D_2', 0),
-                                    ('MHA2D_4', 2), ('FFN2D_1', 1),
-                                    ('GLU2D_5', 4), ('MBConv_5x5_x2', 2)],
-                            reduce_concat=range(2, 6))
-    
-    if model_type == 'STA':
-        model = LeeVAD(n_mels).cuda()
-    elif model_type =='Darts2D':
         model = NetworkVADOriginal(16, 8, genotype, use_second=False).cuda()
-    elif model_type == 'SL_model':
-        model = SelfAttentiveVAD(n_mels).cuda()
-    elif model_type == 'ACAM':
-        model = ACAM(n_mels).cuda()
-    elif model_type == 'BDNN':
-        model = bDNN().cuda()
     elif model_type in 'NewSearch':
-        model = NetworkVADv2(40, 4, genotype, True, 0, False, len(window), n_mels).cuda()    
-    
+        genotype = Genotype(normal=[('MHA2D_F_4', 0), ('MBConv_5x5_x4', 1),
+                                    ('MBConv_5x5_x4', 2), ('MHA2D_F_2', 0),
+                                    ('SE_0.25', 2), ('MBConv_3x3_x4', 0)],
+                            normal_concat=range(2, 5),
+                            reduce=[('MHA2D_F_4', 0), ('MBConv_5x5_x4', 1),
+                                    ('MBConv_5x5_x4', 2), ('MHA2D_F_2', 0),
+                                    ('SE_0.25', 2), ('MBConv_3x3_x4', 0)],
+                            reduce_concat=range(2, 5))
+        model = NetworkVADv2(28, 4, genotype, False, 0, False, 7, n_mels).cuda()    
+ 
     if mode == 'test':
-        path_list = glob(f'{save_path}/*_{model_type}_{dataset_name}_{found}.pth')
-        path_num = sorted([int(path.split('/')[-1].split('_')[0]) for path in path_list])
-        PATH = os.path.join(save_path, f'{path_num[-1]}_{model_type}_{dataset_name}_{found}.pth')
+        PATH = sorted(glob(os.path.join(save_path, '*.pth')))[-1]
         model.load_state_dict(torch.load(PATH))
         print(sum(p.numel() for p in model.parameters() if p.requires_grad))
-    
+
     return model
 
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='Process some integers.')
-    parser.add_argument('--gpu', type=str, default='-1')
+
+    parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default='Marblenet')
-    parser.add_argument('--found', type=str, default='None')
-    parser.add_argument('--mode', type=str, default='train')
-    parser.add_argument('--dataset', type=str, default='TIMIT')
+    parser.add_argument('--mode', type=str, default='train',
+                        choices=['train', 'test'])
+    parser.add_argument('--dataset', type=str, default='TIMIT',
+                        choices=['TIMIT', 'CV'])
     parser.add_argument('--test_dataset', type=str, default='TIMIT')
     parser.add_argument('--save_path', type=str, default='./saved_model')
-    parser.add_argument('--n_mels', type=int, default=64)
-    
-
+    parser.add_argument('--n_mels', type=int, default=80)
+ 
     args = parser.parse_args()
 
-    CV_TRAIN = '/data2/CV_Audioset_Train/audio,/data2/CV_Audioset_Valid/audio'
-    CV_TEST = '/data2/CV_Audioset_Train/audio,/data2/CV_Audioset_Test/audio'
-    TIMIT_TRAIN = '/data2/TIMIT_SoundIdea_Train/audio,/data2/TIMIT_SoundIdea_Valid/audio'
-    TIMIT_TEST = '/data2/TIMIT_SoundIdea_Train/audio,/data2/TIMIT_SoundIdea_Test/audio'
-    AVA_TEST = 'a,/data2/AVA_Test'
+    model = get_model(args.model, args.dataset, args.mode, args.n_mels, args.save_path)
 
-    model = get_model(args.model, args.found, args.dataset, args.mode, args.n_mels, args.save_path)
-    
-    if args.mode == 'train' and args.dataset == 'CV':
-        t = Trainer(CV_TRAIN, args.save_path,
-                            dataset=args.dataset, epochs=50, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
-                            mode=args.mode, model_type=args.model, model=model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
-
-    elif args.mode == 'train' and args.dataset == 'TIMIT':
-        t = Trainer(TIMIT_TRAIN, args.save_path,
-                            dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
-                            mode=args.mode, model_type=args.model, model=model, found=args.found, test_dataset = args.test_dataset, n_mels=args.n_mels)
+    trainer_args = {'dataset': args.dataset,
+                    'test_dataset': args.test_dataset,
+                    'window': [-19, -9, -1, 0, 1, 9, 19],
+                    'mode': args.mode,
+                    'model_type': args.model, 'model': model,
+                    'n_mels': args.n_mels}
+    datapath_mapper = {
+        'train': {
+            'CV': '/data2/CV_Audioset_Train/audio,/data2/CV_Audioset_Valid/audio',
+            'TIMIT': '/data2/TIMIT_SoundIdea_Train/audio,/data2/TIMIT_SoundIdea_Valid/audio',
+        },
+        'test': {
+            'CV': '/data2/CV_Audioset_Train/audio,/data2/CV_Audioset_Test/audio',
+            'TIMIT': '/data2/TIMIT_SoundIdea_Train/audio,/data2/TIMIT_SoundIdea_Test/audio',
+            'AVA': ',/data2/AVA_Test',
+            'BUS': ',/data2/real_data_npy/bus_stop',
+            'CONST_SITE': ',/data2/real_data_npy/const_site',
+            'PARK': ',/data2/real_data_npy/park',
+            'ROOM': ',/data2/real_data_npy/room',
+        }
+    }
 
     if args.mode =='train':
-        t.train()
-    
+        trainer = Trainer(datapath_mapper[args.mode][args.dataset],
+                          args.save_path,
+                          epochs=50 if args.dataset == 'CV' else 100,
+                          **trainer_args)
+        trainer.train()
     else:
-        t = Trainer(TIMIT_TEST, args.save_path,
-                            dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
-                            mode=args.mode, model_type=args.model, model=model, found=args.found, test_dataset = 'TIMIT', n_mels=args.n_mels)
-        t.test()
-        t = Trainer(CV_TEST, args.save_path,
-                            dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19], 
-                            mode=args.mode, model_type=args.model, model=model, found=args.found, test_dataset = 'CV', n_mels=args.n_mels)
-        t.test()
-        t = Trainer(AVA_TEST, args.save_path,
-                            dataset=args.dataset, epochs=100, gpu_id=args.gpu, window=[-19, -9, -1, 0, 1, 9, 19],
-                            mode=args.mode, model_type=args.model, model=model, found=args.found, test_dataset = 'AVA', n_mels=args.n_mels)
-        t.test()
+        for dataset in sorted(datapath_mapper['test'].keys()):
+            print(dataset)
+            trainer = Trainer(datapath_mapper[args.mode][dataset],
+                              args.save_path, epochs=None, **trainer_args)
+            trainer.test()
+
