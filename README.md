@@ -81,12 +81,12 @@ If you wish to increase the number of workers or if your machine cannot handle t
 3. To train baseline model, execute following line. 
 
 ```bash
-python trainer.py --model 'Darts2D' --found 'TIMIT' --mode 'train' --dataset 'TIMIT' --n_mels 80 --save_path "./saved_model"
+python trainer.py --model 'Darts2D' --mode 'train' --dataset 'TIMIT' --save_path "./saved_model"
 ```
 
 - "--model" : Types of the model you want to use, and if the model is from NAS you have to set genotypes at 'get_model' at trainer.py. And use '--found' option to specify your genotypes. (You can refer main part of tainer.py file to set genotypes). BDNN, ACAM, Self Attentive VAD, Spectro-Temporal Attention is additionally available.
 - "--dataset" : Dataset to be used for training.
-- "--n_mels" : The number of mel you want to use. (default : 64)
+- "--n_mels" : The number of mel you want to use. (default : 80)
 - "--save_path" : A path where a model will be stored. Just enter the folder name. It will save a model automatically.
 
 # 3. How to test model
@@ -95,10 +95,10 @@ To test baseline model, you should change the path of train and validation foler
 
 And To test model, execute 
 ```bash
-python trainer.py --model 'Darts2D' --found 'TIMIT' --mode 'test' --dataset 'TIMIT' --test_dataset 'TIMIT' --n_mels 80 --save_path "./saved_model"
+python trainer.py --model 'Darts2D' --mode 'test' --dataset 'TIMIT' --save_path "./saved_model"
 ```
 - "--model" : Types of the model you want to use, and if the model is from NAS you have to set genotypes at 'get_model' at trainer.py. And use '--found' option to specify your genotypes. (You can refer main part of tainer.py file to set genotypes). BDNN, ACAM, Self Attentive VAD, Spectro-Temporal Attention is additionally available.
-- "--dataset" : Dataset to be used for training.  
-- "--n_mels" : The number of mel you want to use. (default : 64)
+- "--dataset" : Dataset to be used for training.
+- "--n_mels" : The number of mel you want to use. (default : 80)
 - "--save_path" : A path where a model will be stored. Just enter the folder name. It will save a model automatically.
 - "--test_dataset" : Dataset to be used for testing.
