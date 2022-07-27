@@ -1,5 +1,6 @@
 # NAS-VAD: Neural Architecture Search for Voice Activity Detection
 Daniel Rho, Jinhyeok Park, and Jong Hwan Ko (https://arxiv.org/abs/2201.09032)
+Interspeech 2022
 
 Our code is based on NAS-BOWL (https://github.com/xingchenwan/nasbowl)
 
